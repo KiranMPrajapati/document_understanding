@@ -28,7 +28,7 @@ bs = 16
 
 class HierText(Dataset):
     def __init__(self, csv_file, data_dir, transform=None):
-        self.data = json.load(open(csv_file, 'r'))["annotations"][:50]
+        self.data = json.load(open(csv_file, 'r'))["annotations"][:1000]
         self.data_dir = data_dir
         self.transform = transform
 
@@ -225,8 +225,8 @@ def main():
     epoch = 50
     for e in range(epoch): 
         train(e+1, model, optimizer, loss_fn, learning_rate, device)
-#     if e % 5 == 0:
-#         val(e+1, model, optimizer, loss_fn, learning_rate, device)
+#         if e % 5 == 0:
+#             val(e+1, model, optimizer, loss_fn, learning_rate, device)
 
 if __name__ == "__main__":
     main()
