@@ -23,7 +23,7 @@ transforms = transforms.Compose([
     transforms.Resize((400,400)), 
     transforms.ToTensor()
 ])
-bs = 1
+bs = 16
 
 
 class HierText(Dataset):
@@ -72,7 +72,7 @@ class HierText(Dataset):
 
         binary_image = np.clip(dont_care_mask * 1. + (1. - dont_care_mask) * colored, 0., 1.)
         
-        sample = {"image": image.astype(np.uint8), "binary_image": binary_image.astype(np.uint8)}
+        sample = {"image": image.astype(np.uint8), "binary_image": binary_image.astype(np.uint8), "image_name": f"{img_name}.jpg"}
 
         if self.transform:
             sample["image"] = self.transform(sample["image"])
@@ -83,7 +83,7 @@ class HierText(Dataset):
 hiertext_train_dataset = HierText(csv_file=train_csv_file, data_dir=train_data_dir, transform=transforms)
 hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, transform=transforms)
 train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, shuffle=True)
-val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, shuffle=False)
+val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, shuffle=True)
 
 ### Model 
 class Encoder(nn.Module):
@@ -167,7 +167,8 @@ class EncoderDecoder(nn.Module):
         out = self.decoder(out)
         return out 
 
-def train(e, model, optimizer, loss_fn, learning_rate):
+def train(e, model, optimizer, loss_fn, learning_rate, device):
+    print("Training started")
     model.train()
     optimizer.zero_grad()    
     total_loss = 0 
@@ -178,25 +179,26 @@ def train(e, model, optimizer, loss_fn, learning_rate):
         pred_binary_image = model(image) 
         pred_binary_image = torch.matmul(pred_binary_image, value)
         loss = loss_fn(binary_image, pred_binary_image)
-        total_loss += loss 
+        total_loss += loss.item()
         loss.backward()
         optimizer.step() 
         optimizer.zero_grad()
         if batch_idx % 50 == 0:
             print(f"Epoch: {e}, batch_idx: {batch_idx}, num_data: {len(train_dataloader.dataset)}, Loss: {loss}")
-    epoch_loss = (total_loss.item()*bs)/len(train_dataloader.dataset)
+    epoch_loss = (total_loss*bs)/len(train_dataloader.dataset)
     print(f"Epoch: {e}, Epoch Loss: {epoch_loss}")
     writer.add_scalar('Loss/train_lr:0.0001', epoch_loss, e)
-    if e % 25 == 0:
+    if e % 5 == 0:
 #         if os.path.exists('/mnt/researchteam/.local/share/Trash/'):
 #             shutil.rmtree('/mnt/researchteam/.local/share/Trash/')            
 #         if os.path.exists(f"saved_models/model{e-10}.pth"):
 #             os.remove(f"saved_models/model{e-10}.pth")
-        torch.save(model.state_dict(), f"saved_models/model{e}.pth")
+        torch.save(model.state_dict(), f"{cwd}/saved_models/model{e}.pth")
     
-def val(e, model, optimizer, loss_fn, learning_rate):
+def val(e, model, optimizer, loss_fn, learning_rate, device):
+    print("Validation started")
     model.eval()
-    total_loss = 0
+    val_loss = 0
     for batch_idx, data in enumerate(val_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         value = torch.full(binary_image.shape, 255.0).to(device)
@@ -204,8 +206,10 @@ def val(e, model, optimizer, loss_fn, learning_rate):
         pred_binary_image = model(image) 
         pred_binary_image = torch.matmul(pred_binary_image, value)
         loss = loss_fn(binary_image, pred_binary_image)
-        total_loss += loss 
-    epoch_loss = (total_loss.item()*bs)/len(val_dataloader.dataset)
+        val_loss += loss.item() 
+        print(f"Epoch: {e}, batch_idx: {batch_idx}, num_data: {len(val_dataloader.dataset)}, Loss: {loss}")
+        
+    epoch_loss = (val_loss*bs)/len(val_dataloader.dataset)
     print(f"Epoch: {e}, num_data: {len(val_dataloader.dataset)}, Loss: {epoch_loss}")
     writer.add_scalar('Loss/val_lr:0.0001', epoch_loss, e)
     
@@ -218,11 +222,11 @@ def main():
     model = EncoderDecoder(encoder_model, decoder_model).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    epoch = 200
+    epoch = 50
     for e in range(epoch): 
-        train(e, model, optimizer, loss_fn, learning_rate)
-#     if e % 25 == 0:
-        val(e, model, optimizer, loss_fn, learning_rate)
+        train(e+1, model, optimizer, loss_fn, learning_rate, device)
+#     if e % 5 == 0:
+#         val(e+1, model, optimizer, loss_fn, learning_rate, device)
 
 if __name__ == "__main__":
     main()
