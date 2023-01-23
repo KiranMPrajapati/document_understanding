@@ -212,7 +212,7 @@ def val(e, model, optimizer, loss_fn, learning_rate, device):
     print(f"Epoch: {e}, num_data: {len(val_dataloader.dataset)}, Loss: {epoch_loss}")
     writer.add_scalar('Loss/val_lr:0.0001', epoch_loss, e)
     
-def main():
+def main(rank):
     device = xm.xla_device()
     learning_rate = 0.0001 
     loss_fn = torch.nn.BCEWithLogitsLoss()
