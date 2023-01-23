@@ -7,6 +7,7 @@ import numpy as np
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import torch_xla.core.xla_model as xm
+import torch_xla.distributed.xla_multiprocessing as xmp
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
