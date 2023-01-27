@@ -1,13 +1,13 @@
 import os
-import cv2 
 import json
 import torch
 import shutil
 import numpy as np
+import pandas as pd
 import torch.nn as nn
 import matplotlib.pyplot as plt
-import torch_xla.core.xla_model as xm
-import torch_xla.distributed.xla_multiprocessing as xmp
+import torch_xla.core.xla_model as xm 
+from PIL import Image
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
@@ -16,13 +16,13 @@ from torchvision import transforms, utils
 cwd = os.getcwd()
 
 train_data_dir = f'{cwd}/dataset/train'
-train_csv_file = f'{cwd}/hiertext/gt/train.jsonl'
 val_data_dir = f'{cwd}/dataset/validation'
 val_csv_file = f'{cwd}/hiertext/gt/validation.jsonl'
+binary_data_dir = f'{cwd}/dataset/binary_train/'
+csv_file = f'{cwd}/hiertext/gt/hiertext2.csv' 
 
 writer = SummaryWriter()
-transforms = transforms.Compose([
-    transforms.ToPILImage(), 
+transform = transforms.Compose([
     transforms.Resize((400,400)), 
     transforms.ToTensor()
 ])
@@ -30,63 +30,41 @@ bs = 16
 
 
 class HierText(Dataset):
-    def __init__(self, csv_file, data_dir, transform=None):
-        self.data = json.load(open(csv_file, 'r'))["annotations"]
+    def __init__(self, csv_file, data_dir, binary_data_dir, transform=None):
+        self.data = pd.read_csv(csv_file)
         self.data_dir = data_dir
-        self.transform = transform
+        self.binary_data_dir = binary_data_dir 
+        self.transform = transform        
 
     def __len__(self):
         return len(self.data)
-    
-    def draw_mask(self, vertices, w, h):
-        mask = np.zeros((h, w, 3), dtype=np.float32)
-        mask = cv2.fillPoly(mask, [vertices], [1.] * 3)[:, :, 0]
-        return mask
 
     def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        data_annotations = self.data[idx]
-        img_name = os.path.join(self.data_dir, data_annotations['image_id'])
-        image = cv2.imread(f"{img_name}.jpg")
-        w = data_annotations['image_width']
-        h = data_annotations['image_height']
-
-        gt_word_masks = []
-        gt_word_weights = []
-
-        for paragraph in data_annotations['paragraphs']:
-            for line in paragraph['lines']:
-                for word in line['words']:
-                    gt_word_weights.append(1.0 if word['legible'] else 0.0)
-                    vertices = np.array(word['vertices'])
-                    gt_word_mask = self.draw_mask(vertices, w, h)
-                    gt_word_masks.append(gt_word_mask)
-
-        n_mask = len(gt_word_masks)
-
-        gt_masks = (np.stack(gt_word_masks, -1) if n_mask else np.zeros(((h + 1) // 2, (w + 1) // 2, 0), np.float32))
-        gt_weights = (np.array(gt_word_weights) if n_mask else np.zeros((0,), np.float32))
+        image_name = self.data["image_name"][idx]
+        img_dir = os.path.join(self.data_dir, image_name)
+        binary_img_dir = os.path.join(self.binary_data_dir, image_name)
+   
+        image = Image.open(img_dir)
+        binary_image = Image.open(binary_img_dir)
         
-        palette = [[1]]*n_mask
-        colored = np.reshape(np.matmul(np.reshape(gt_masks, (-1, n_mask)), palette), (h, w, 1))
-        dont_care_mask = (np.reshape(np.matmul(np.reshape(gt_masks, (-1, n_mask)), np.reshape(1.- gt_weights, (-1, 1))), (h, w, 1)) > 0).astype(np.float32)
-
-        binary_image = np.clip(dont_care_mask * 1. + (1. - dont_care_mask) * colored, 0., 1.)
+        binary_image = binary_image.resize((400,400))
+        binary_image = np.array(binary_image)
         
-        sample = {"image": image.astype(np.uint8), "binary_image": binary_image.astype(np.uint8), "image_name": f"{img_name}.jpg"}
-
+        binary_image[binary_image >= 0.5] = 1
+        binary_image[binary_image < 0.5] = 0
+        
+        binary_image = torch.from_numpy(binary_image)
+        sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}        
         if self.transform:
             sample["image"] = self.transform(sample["image"])
-            sample["binary_image"] = self.transform(sample["binary_image"])
+            
 
         return sample
     
-hiertext_train_dataset = HierText(csv_file=train_csv_file, data_dir=train_data_dir, transform=transforms)
-hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, transform=transforms)
-train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, shuffle=True)
-val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, shuffle=True)
+hiertext_train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, binary_data_dir=binary_data_dir, transform=transform)
+#hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, transform=transform)
+train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, num_workers=4, shuffle=True, pin_memory=True)
+#val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, shuffle=True)
 
 ### Model 
 class Encoder(nn.Module):
@@ -170,7 +148,7 @@ class EncoderDecoder(nn.Module):
         out = self.decoder(out)
         return out 
 
-def train(e, model, optimizer, loss_fn, learning_rate, device):
+def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     print("Training started")
     model.train()
     optimizer.zero_grad()    
@@ -178,7 +156,7 @@ def train(e, model, optimizer, loss_fn, learning_rate, device):
     for batch_idx, data in enumerate(train_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
-        loss = loss_fn(pred_binary_image, binary_image)
+        loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
         total_loss += loss.item()
         loss.backward()
         optimizer.step() 
@@ -186,15 +164,17 @@ def train(e, model, optimizer, loss_fn, learning_rate, device):
         optimizer.zero_grad()
         if batch_idx % 50 == 0:
             print(f"Epoch: {e}, batch_idx: {batch_idx}, num_data: {len(train_dataloader.dataset)}, Loss: {loss}")
+    scheduler.step()    
     epoch_loss = (total_loss*bs)/len(train_dataloader.dataset)
     print(f"Epoch: {e}, Epoch Loss: {epoch_loss}")
-    writer.add_scalar('Loss/train_lr:0.0001', epoch_loss, e)
-    if e % 5 == 0:
+    writer.add_scalar('Loss/train', epoch_loss, e)
+    
+    if e % 50 == 0:
         if os.path.exists('/mnt/researchteam/.local/share/Trash/'):
             shutil.rmtree('/mnt/researchteam/.local/share/Trash/')            
-        if os.path.exists(f"saved_models/model{e-5}.pth"):
-            os.remove(f"saved_models/model{e-5}.pth")
-        torch.save(model.state_dict(), f"{cwd}/saved_models/model{e}.pth")
+        if os.path.exists(f"saved_models/model_scheduler{e-50}.pth"):
+            os.remove(f"saved_models/model_scheduler{e-50}.pth")
+        torch.save(model.state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
     
 def val(e, model, optimizer, loss_fn, learning_rate, device):
     print("Validation started")
@@ -210,23 +190,25 @@ def val(e, model, optimizer, loss_fn, learning_rate, device):
         
     epoch_loss = (val_loss*bs)/len(val_dataloader.dataset)
     print(f"Epoch: {e}, num_data: {len(val_dataloader.dataset)}, Loss: {epoch_loss}")
-    writer.add_scalar('Loss/val_lr:0.0001', epoch_loss, e)
+    writer.add_scalar('Loss/val', epoch_loss, e)
     
-def main(rank):
+def main():
     device = xm.xla_device()
     learning_rate = 0.0001 
     loss_fn = torch.nn.BCEWithLogitsLoss()
     encoder_model = Encoder().to(device)
     decoder_model = Decoder().to(device)
     model = EncoderDecoder(encoder_model, decoder_model).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+#     model.load_state_dict(torch.load("saved_models/model400.pth"))
+    optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    decayRate = 0.96
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 
-    epoch = 50
-    for e in range(epoch): 
-        train(e+1, model, optimizer, loss_fn, learning_rate, device)
+    epoch=1000
+    for e in tqdm(range(epoch)): 
+        train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
 #         if e % 5 == 0:
-#         val(e+1, model, optimizer, loss_fn, learning_rate, device)
-
+#         val(e+1, model, optimizers, loss_fn, learning_rate, device)oo
 if __name__ == "__main__":
     # 4x 1 chip (2 cores) per process:
     os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "1,1,1"
@@ -236,4 +218,4 @@ if __name__ == "__main__":
     # Pick a unique port per process
     os.environ["TPU_MESH_CONTROLLER_ADDRESS"] = "localhost:8476"
     os.environ["TPU_MESH_CONTROLLER_PORT"] = "8476"
-    xmp.spawn(main, args=(), nprocs=1, start_method='fork')
+    main()
