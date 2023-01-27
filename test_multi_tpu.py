@@ -4,9 +4,16 @@ import torch
 import shutil
 import numpy as np
 import pandas as pd
+import time
 import torch.nn as nn
 import matplotlib.pyplot as plt
-import torch_xla.core.xla_model as xm 
+import torch_xla
+import torch_xla.core.xla_model as xm
+import torch_xla.debug.metrics as met
+import torch_xla.debug.profiler as xp
+import torch_xla.distributed.parallel_loader as pl
+import torch_xla.distributed.xla_multiprocessing as xmp
+import torch_xla.utils.utils as xu
 from PIL import Image
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
@@ -14,6 +21,8 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 
 cwd = os.getcwd()
+
+SERIAL_EXEC = xmp.MpSerialExecutor()
 
 train_data_dir = f'{cwd}/dataset/train'
 val_data_dir = f'{cwd}/dataset/validation'
@@ -26,7 +35,7 @@ transform = transforms.Compose([
     transforms.Resize((400,400)), 
     transforms.ToTensor()
 ])
-bs = 16
+bs = 4*16
 
 
 class HierText(Dataset):
@@ -61,9 +70,14 @@ class HierText(Dataset):
 
         return sample
     
-hiertext_train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, binary_data_dir=binary_data_dir, transform=transform)
+train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, binary_data_dir=binary_data_dir, transform=transform)
+train_sampler = torch.utils.data.distributed.DistributedSampler(
+    train_dataset,
+    num_replicas=xm.xrt_world_size(),
+    rank=xm.get_ordinal(),
+    shuffle=True)
 #hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, transform=transform)
-train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, num_workers=32, shuffle=True, pin_memory=True)
+train_dataloader = DataLoader(train_dataset, batch_size=bs, sampler=train_sampler, num_workers=32, shuffle=False, pin_memory=True)
 #val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, shuffle=True)
 
 ### Model 
@@ -148,33 +162,35 @@ class EncoderDecoder(nn.Module):
         out = self.decoder(out)
         return out 
 
-def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
-    print("Training started")
+def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device, rank):
+    xm.master_print("Training started")
+    tracker = xm.RateTracker()
+    para_loader = pl.ParallelLoader(train_dataloader, [device])
     model.train()
     optimizer.zero_grad()    
     total_loss = 0 
-    for batch_idx, data in enumerate(train_dataloader):
+    for batch_idx, data in enumerate(para_loader.per_device_loader(device)):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
         loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
         total_loss += loss.item()
         loss.backward()
-        optimizer.step() 
-        xm.mark_step()
+        xm.optimizer_step(optimizer) 
         optimizer.zero_grad()
         if batch_idx % 50 == 0:
-            print(f"Epoch: {e}, batch_idx: {batch_idx}, num_data: {len(train_dataloader.dataset)}, Loss: {loss}")
+            xm.master_print(f'Loss={round(loss.item(), 5)} Time={time.asctime()} num_data: {len(train_dataloader.dataset)}', flush=True)
     scheduler.step()    
     epoch_loss = (total_loss*bs)/len(train_dataloader.dataset)
-    print(f"Epoch: {e}, Epoch Loss: {epoch_loss}")
-    writer.add_scalar('Loss/train', epoch_loss, e)
+    xm.master_print("Finished training epoch {}".format(e))
+    if rank==0:
+        writer.add_scalar('Loss/train', epoch_loss, e)
     
-    if e % 50 == 0:
+    if e % 50 == 0 and rank==0:
         if os.path.exists('/mnt/researchteam/.local/share/Trash/'):
             shutil.rmtree('/mnt/researchteam/.local/share/Trash/')            
         if os.path.exists(f"saved_models/model_scheduler{e-50}.pth"):
             os.remove(f"saved_models/model_scheduler{e-50}.pth")
-        torch.save(model.state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
+        xm.save(model.state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
     
 def val(e, model, optimizer, loss_fn, learning_rate, device):
     print("Validation started")
@@ -192,30 +208,24 @@ def val(e, model, optimizer, loss_fn, learning_rate, device):
     print(f"Epoch: {e}, num_data: {len(val_dataloader.dataset)}, Loss: {epoch_loss}")
     writer.add_scalar('Loss/val', epoch_loss, e)
     
-def main():
+def main(rank):
     device = xm.xla_device()
-    learning_rate = 0.0001 
+    learning_rate = 0.0001 * xm.xrt_world_size()
     loss_fn = torch.nn.BCEWithLogitsLoss()
-    encoder_model = Encoder().to(device)
-    decoder_model = Decoder().to(device)
-    model = EncoderDecoder(encoder_model, decoder_model).to(device)
+    encoder_model = Encoder()
+    decoder_model = Decoder()
+    encoder_decoder_model = EncoderDecoder(encoder_model, decoder_model)
+    model = xmp.MpModelWrapper(encoder_decoder_model)
+    model = model.to(device)
 #     model.load_state_dict(torch.load("saved_models/model400.pth"))
     optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 
-    epoch=1000
+    epoch=2
     for e in tqdm(range(epoch)): 
-        train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
+        train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device, rank)
 #         if e % 5 == 0:
 #         val(e+1, model, optimizers, loss_fn, learning_rate, device)oo
 if __name__ == "__main__":
-    # 4x 1 chip (2 cores) per process:
-    os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "1,1,1"
-    os.environ["TPU_HOST_BOUNDS"] = "1,1,1"
-    # Different per process:
-    os.environ["TPU_VISIBLE_DEVICES"] = "0" # "1", "2", "3"
-    # Pick a unique port per process
-    os.environ["TPU_MESH_CONTROLLER_ADDRESS"] = "localhost:8476"
-    os.environ["TPU_MESH_CONTROLLER_PORT"] = "8476"
-    main()
+    xmp.spawn(main, args=(), nprocs=8, start_method='fork')
