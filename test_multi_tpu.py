@@ -222,7 +222,7 @@ def main(rank):
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 
-    epoch=2
+    epoch=1000
     for e in tqdm(range(epoch)): 
         train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device, rank)
 #         if e % 5 == 0:
