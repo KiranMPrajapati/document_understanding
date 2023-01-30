@@ -987,6 +987,9 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
             block_gmlp_factor=self.block_gmlp_factor,grid_gmlp_factor=self.grid_gmlp_factor,input_proj_factor=self.input_proj_factor,
             channels_reduction=self.channels_reduction,use_global_mlp=self.use_global_mlp,dropout_rate=self.drop,use_bias=self.bias)
         self.stage_2_output_conv_0 = nn.Conv2d((2**(0))*self.features,self.num_outputs,kernel_size=(3,3), bias=self.bias,padding=1)
+        
+        self.reduce_channel = nn.Conv2d(3, 1, 3, padding=1)
+
 
     def forward(self, x):
         shortcuts = []
@@ -1310,7 +1313,7 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 skip_features.append(skips)
         
         # start decoder. Multi-scale feature fusion of cross-gated features
-        outputs = []
+        final_output = None
         for i in reversed(range(self.depth)):
             if i == 2:
                 # get multi-scale skip signals from cross-gating block
@@ -1325,7 +1328,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 # Last stage, apply output convolutions
                 output = self.stage_2_output_conv_2(x)
                 output = output + shortcuts[i]
-                outputs.append(output)
             elif i == 1:
                 # get multi-scale skip signals from cross-gating block
                 signal2 = self.UpSampleRatio_48(skip_features[0])
@@ -1339,7 +1341,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 # Last stage, apply output convolutions
                 output = self.stage_2_output_conv_1(x)
                 output = output + shortcuts[i]
-                outputs.append(output)
             elif i == 0:
                 # get multi-scale skip signals from cross-gating block
                 signal2 = self.UpSampleRatio_51(skip_features[0])
@@ -1353,10 +1354,7 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 # Last stage, apply output convolutions
                 output = self.stage_2_output_conv_0(x)
                 output = output + shortcuts[i]
-                outputs.append(output)
-
-        # Store outputs
-        outputs_all.append(outputs)
-
-        return outputs_all
+                final_output = output
+        final_output = self.reduce_channel(final_output)
+        return final_output
 

@@ -24,12 +24,13 @@ val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
 val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
 
+image_size = 512
 writer = SummaryWriter()
 transform = transforms.Compose([
-    transforms.Resize((1024,1024)), 
+    transforms.Resize((image_size, image_size)), 
     transforms.ToTensor()
 ])
-bs =16
+bs = 8
 
 
 class HierText(Dataset):
@@ -50,7 +51,7 @@ class HierText(Dataset):
         image = Image.open(img_dir)
         binary_image = Image.open(binary_img_dir)
         
-        binary_image = binary_image.resize((1024,1024))
+        binary_image = binary_image.resize((image_size, image_size))
         binary_image = np.array(binary_image)
         
         binary_image[binary_image >= 0.5] = 1
@@ -69,88 +70,6 @@ hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, bi
 train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, num_workers=32, shuffle=True, pin_memory=True)
 val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, num_workers=32, shuffle=True)
 
-### Model 
-class Encoder(nn.Module):
-    def __init__(self):
-        super(Encoder, self).__init__()
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU())
-        self.layer3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU())
-        self.layer5 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU())
-
-        self.layer6 = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU())
-        self.layer8 = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU())
-        
-        self.maxpool = nn.MaxPool2d(kernel_size = 3, stride = 2, ceil_mode=True)
-        
-        self.fc = nn.Linear(in_features=256*25*25, out_features=512)
-        
-    def forward(self, x):
-        out = self.layer1(x)
-        out = self.maxpool(out)
-        out = self.layer3(out)
-        out = self.maxpool(out)
-        out = self.layer5(out)
-        out = self.maxpool(out)
-        out = self.layer6(out)
-        out = self.maxpool(out)
-        out = self.layer8(out)
-        return out
-    
-class Decoder(nn.Module):
-    def __init__(self):
-        super(Decoder, self).__init__()
-        self.fc = nn.Linear(in_features=512, out_features=256*25*25)
-        
-        self.layer7 = nn.Sequential(
-            nn.ConvTranspose2d(64, 1, kernel_size=4, stride=2, padding=1),
-            nn.ReLU()
-            )
-        self.layer6 = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU())
-        self.layer4 = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU())
-        self.layer3 = nn.Sequential(
-            nn.ConvTranspose2d(256, 256, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU())
-        
-    def forward(self, x):
-        out = self.layer3(x)
-        out = self.layer4(out)
-        out = self.layer6(out)
-        out = self.layer7(out)
-        return out
-    
-class EncoderDecoder(nn.Module):
-    def __init__(self, encoder, decoder):
-        super(EncoderDecoder, self).__init__() 
-        self.encoder = encoder 
-        self.decoder = decoder 
-    
-    def forward(self, x):
-        out = self.encoder(x)
-        out = self.decoder(out)
-        return out 
-
 def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     print("Training started")
     model.train()
@@ -159,8 +78,6 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     for batch_idx, data in enumerate(train_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
-        print(len(pred_binary_image))
-        break
         loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
         total_loss += loss.item()
         loss.backward()
@@ -201,16 +118,12 @@ def main():
     device = xm.xla_device()
     learning_rate = 0.0001 
     loss_fn = torch.nn.BCEWithLogitsLoss()
-#    encoder_model = Encoder().to(device)
-#    decoder_model = Decoder().to(device)
-#    model = EncoderDecoder(encoder_model, decoder_model).to(device)
-#    model.load_state_dict(torch.load("saved_models/model_scheduler350.pth"))
     model = maxim_test.MAXIM_dns_3s().to(device)
     optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 
-    epoch=1000
+    epoch=1
     for e in tqdm(range(epoch)): 
         train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
         if e % 5 == 0:
