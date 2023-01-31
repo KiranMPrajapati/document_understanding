@@ -2,7 +2,7 @@ import os
 import json
 import torch
 import shutil
-import maxim_test
+import m1_gmlp
 import numpy as np
 import pandas as pd
 import torch.nn as nn
@@ -13,7 +13,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
-
+from torchsummary import summary
 cwd = os.getcwd()
 
 train_data_dir = f'{cwd}/dataset/train'
@@ -24,13 +24,13 @@ val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
 val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
 
-image_size = 512
+image_size = 256
 writer = SummaryWriter()
 transform = transforms.Compose([
     transforms.Resize((image_size, image_size)), 
     transforms.ToTensor()
 ])
-bs = 8
+bs = 1
 
 
 class HierText(Dataset):
@@ -118,7 +118,8 @@ def main():
     device = xm.xla_device()
     learning_rate = 0.0001 
     loss_fn = torch.nn.BCEWithLogitsLoss()
-    model = maxim_test.MAXIM_dns_3s().to(device)
+    model = m1_gmlp.MAXIM_dns_3s().to(device)
+    #print(summary(model, (1, 3, image_size, image_size)))
     optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)

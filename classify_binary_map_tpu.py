@@ -19,14 +19,16 @@ train_data_dir = f'{cwd}/dataset/train'
 val_data_dir = f'{cwd}/dataset/validation'
 val_csv_file = f'{cwd}/hiertext/gt/validation.jsonl'
 binary_data_dir = f'{cwd}/dataset/binary_train/'
+val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
+val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
 
 writer = SummaryWriter()
 transform = transforms.Compose([
     transforms.Resize((400,400)), 
     transforms.ToTensor()
 ])
-bs = 16
+bs =16*2
 
 
 class HierText(Dataset):
@@ -62,9 +64,9 @@ class HierText(Dataset):
         return sample
     
 hiertext_train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, binary_data_dir=binary_data_dir, transform=transform)
-#hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, transform=transform)
+hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, binary_data_dir=val_binary_data_dir, transform=transform)
 train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, num_workers=32, shuffle=True, pin_memory=True)
-#val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, shuffle=True)
+val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, num_workers=32, shuffle=True)
 
 ### Model 
 class Encoder(nn.Module):
@@ -183,7 +185,7 @@ def val(e, model, optimizer, loss_fn, learning_rate, device):
     for batch_idx, data in enumerate(val_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
-        loss = loss_fn(pred_binary_image, binary_image)
+        loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
         val_loss += loss.item() 
         if batch_idx % 100 == 0: 
             print(f"Epoch: {e}, batch_idx: {batch_idx}, num_data: {len(val_dataloader.dataset)}, Loss: {loss}")
@@ -199,16 +201,16 @@ def main():
     encoder_model = Encoder().to(device)
     decoder_model = Decoder().to(device)
     model = EncoderDecoder(encoder_model, decoder_model).to(device)
-#     model.load_state_dict(torch.load("saved_models/model400.pth"))
+   # model.load_state_dict(torch.load("saved_models/model_scheduler350.pth"))
     optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    decayRate = 0.96
+    decayRate = 0.5
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 
     epoch=1000
     for e in tqdm(range(epoch)): 
         train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
-#         if e % 5 == 0:
-#         val(e+1, model, optimizers, loss_fn, learning_rate, device)oo
+        if e % 5 == 0:
+            val(e+1, model, optimizers, loss_fn, learning_rate, device)
 if __name__ == "__main__":
     # 4x 1 chip (2 cores) per process:
     os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "1,1,1"

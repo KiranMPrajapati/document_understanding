@@ -86,7 +86,9 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device, rank):
     optimizer.zero_grad()    
     total_loss = 0 
     para_loader = pl.ParallelLoader(train_dataloader, [device])
+    print(para_loader.per_device_loader(train_dataloader))
     for batch_idx, data in enumerate(para_loader.per_device_loader(train_dataloader)):
+        print('data')
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
         loss = loss_fn(pred_binary_image, binary_image)
@@ -143,4 +145,4 @@ def main(rank):
         val(e+1, model, optimizers, loss_fn, learning_rate, device, rank)
 
 if __name__ == "__main__":
-    xmp.spawn(main, args=(), nprocs=8, start_method='fork')
+    xmp.spawn(main, args=(), nprocs=1, start_method='fork')
