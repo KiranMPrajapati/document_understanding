@@ -576,46 +576,6 @@ class BottleneckBlock(nn.Module):  #input shape: n,c,h,w
         x = x + shortcut_long
         return x
 
-#multi stage
-class SAM(nn.Module):  #x shape and x_image shape: n, c, h, w
-    """Supervised attention module for multi-stage training.
-    Introduced by MPRNet [CVPR2021]: https://github.com/swz30/MPRNet
-    """
-    def __init__(self,features,output_channels=3,use_bias=True):
-        super().__init__()
-        self.features = features  #cin
-        self.output_channels = output_channels
-        self.use_bias = use_bias
-        self.Conv_0 = nn.Conv2d(self.features,self.features, kernel_size=(3, 3),bias=self.use_bias,padding=1)
-        self.Conv_1 = nn.Conv2d(self.features,self.output_channels, kernel_size=(3, 3),bias=self.use_bias,padding=1)
-        self.Conv_2 = nn.Conv2d(self.output_channels,self.features, kernel_size=(3, 3),bias=self.use_bias,padding=1)
-        self.sigmoid = nn.Sigmoid()
-    def forward(self,x,x_image):
-        """Apply the SAM module to the input and features.
-        Args:
-          x: the output features from UNet decoder with shape (h, w, c)
-          x_image: the input image with shape (h, w, 3)
-          train: Whether it is training
-        Returns:
-          A tuple of tensors (x1, image) where (x1) is the sam features used for the
-            next stage, and (image) is the output restored image at current stage.
-        """
-        # Get features
-        x1 = self.Conv_0(x)
-        # Output restored image X_s
-        if self.output_channels == 3:
-            image = self.Conv_1(x) + x_image
-        else:
-            image = self.Conv_1(x)
-        # Get attention maps for features
-        x2 = self.Conv_2(image)
-        x2 = self.sigmoid(x2)
-        # Get attended feature maps
-        x1 = x1 * x2
-        # Residual connection
-        x1 = x1 + x
-        return x1, image
-
 #top: 3-stage MAXIM for image denoising
 class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w   
     """The MAXIM model function with multi-stage and multi-scale supervision.
@@ -747,7 +707,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
             grid_size=self.grid_size_hr if 2 < self.high_res_stages else self.block_size_lr,
             block_gmlp_factor=self.block_gmlp_factor,grid_gmlp_factor=self.grid_gmlp_factor,input_proj_factor=self.input_proj_factor,
             channels_reduction=self.channels_reduction,use_global_mlp=self.use_global_mlp,dropout_rate=self.drop,use_bias=self.bias)
-        self.stage_0_supervised_attention_module_2 = SAM(features=2 ** (2)*self.features,output_channels=self.num_outputs,use_bias=self.bias)
         #depth=1
         self.UpSampleRatio_12 = UpSampleRatio_1_2(4 * self.features,ratio=2**(1),use_bias=self.bias)#2->1
         self.UpSampleRatio_13 = UpSampleRatio(2 * self.features,ratio=2**(0),use_bias=self.bias)#1->1
@@ -757,7 +716,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
             grid_size=self.grid_size_hr if 1 < self.high_res_stages else self.block_size_lr,
             block_gmlp_factor=self.block_gmlp_factor,grid_gmlp_factor=self.grid_gmlp_factor,input_proj_factor=self.input_proj_factor,
             channels_reduction=self.channels_reduction,use_global_mlp=self.use_global_mlp,dropout_rate=self.drop,use_bias=self.bias)
-        self.stage_0_supervised_attention_module_1 = SAM(features=2 ** (1)*self.features,output_channels=self.num_outputs,use_bias=self.bias)
         #depth=0
         self.UpSampleRatio_15 = UpSampleRatio_1_4(4 * self.features,ratio=4,use_bias=self.bias)#2->0
         self.UpSampleRatio_16 = UpSampleRatio_1_2(2 * self.features,ratio=2,use_bias=self.bias)#1->0
@@ -767,9 +725,8 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
             grid_size=self.grid_size_hr if 0 < self.high_res_stages else self.block_size_lr,
             block_gmlp_factor=self.block_gmlp_factor,grid_gmlp_factor=self.grid_gmlp_factor,input_proj_factor=self.input_proj_factor,
             channels_reduction=self.channels_reduction,use_global_mlp=self.use_global_mlp,dropout_rate=self.drop,use_bias=self.bias)
-        self.stage_0_supervised_attention_module_0 = SAM(features=2 ** (0)*self.features,output_channels=self.num_outputs,use_bias=self.bias)
         
-#         self.reduce_channel = nn.Conv2d(3, 1, 3, padding=1)
+        self.reduce_channel = nn.Conv2d(self.features, 1, 3, padding=1)
 
 
     def forward(self, x):
@@ -852,7 +809,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 skip_features.append(skips)
         
         # start decoder. Multi-scale feature fusion of cross-gated features
-#         outputs, decs, sam_features = [], [], []
         for i in reversed(range(self.depth)):
             if i == 2:
                 # get multi-scale skip signals from cross-gating block
@@ -862,10 +818,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 signal = torch.cat([signal2, signal1, signal0], dim=1)
                 # Decoder block
                 x = self.stage_0_decoder_block_2(x, bridge=signal)
-#                 decs.append(x)
-                sam, output = self.stage_0_supervised_attention_module_2(x, shortcuts[i])
-#                 outputs.append(output)
-#                 sam_features.append(sam)
             elif i == 1:
                 # get multi-scale skip signals from cross-gating block
                 signal2 = self.UpSampleRatio_12(skip_features[0])
@@ -874,10 +826,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 signal = torch.cat([signal2, signal1, signal0], dim=1)
                 # Decoder block
                 x = self.stage_0_decoder_block_1(x, bridge=signal)
-#                 decs.append(x)
-                sam, output = self.stage_0_supervised_attention_module_1(x, shortcuts[i])
-#                 outputs.append(output)
-#                 sam_features.append(sam)
             elif i == 0:
                 # get multi-scale skip signals from cross-gating block
                 signal2 = self.UpSampleRatio_15(skip_features[0])
@@ -886,11 +834,6 @@ class MAXIM_dns_3s(nn.Module):  #input shape: n, c, h, w
                 signal = torch.cat([signal2, signal1, signal0], dim=1)
                 # Decoder block
                 x = self.stage_0_decoder_block_0(x, bridge=signal)
-#                 decs.append(x)
-                sam, output = self.stage_0_supervised_attention_module_0(x, shortcuts[i])
-#                 outputs.append(output)
-#                 sam_features.append(sam)
-                        
+        x = self.reduce_channel(x)          
         # Store outputs
-#         outputs_all.append(outputs)
-        return output
+        return x

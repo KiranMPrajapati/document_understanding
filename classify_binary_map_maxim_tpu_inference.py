@@ -5,6 +5,8 @@ import torch
 import shutil
 import m1_gmlp
 import numpy as np
+from torchvision.utils import make_grid
+import torchvision
 import pandas as pd
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -14,6 +16,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
+import random
 from torchsummary import summary
 cwd = os.getcwd()
 
@@ -24,15 +27,43 @@ binary_data_dir = f'{cwd}/dataset/binary_train/'
 val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
 val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
+saved_model = f'{cwd}/saved_models/'
+save_image = f'{cwd}/results/'
 
-image_size = 128
+image_size = 64
 writer = SummaryWriter()
 transform = transforms.Compose([
+    transforms.ToPILImage(),
     transforms.Resize((image_size, image_size)), 
     transforms.ToTensor()
 ])
-bs = 8
+bs = 1
 
+def aug_scale_mat(height, width, scale_factor):
+
+    centerX = (width) / 2
+    centerY = (height) / 2
+
+    tx = centerX - centerX * scale_factor
+    ty = centerY - centerY * scale_factor
+
+    scale_mat = np.array([[scale_factor, 0, tx], [0, scale_factor, ty], [0., 0., 1.]])
+
+    return scale_mat
+
+def aug_rotate_mat(height, width, angle):
+
+    centerX = (width - 1) / 2
+    centerY = (height - 1) / 2
+
+    rotation_mat = cv2.getRotationMatrix2D((centerX, centerY), angle, 1.0)
+    rotation_mat = np.vstack([rotation_mat, [0., 0., 1.]])
+
+    return rotation_mat
+
+def warp_image(image, homography, target_h, target_w):
+    # homography = np.linalg.inv(homography)
+    return cv2.warpPerspective(image, homography, dsize=tuple((target_w, target_h)))
 
 class HierText(Dataset):
     def __init__(self, csv_file, data_dir, binary_data_dir, transform=None):
@@ -49,17 +80,31 @@ class HierText(Dataset):
         img_dir = os.path.join(self.data_dir, image_name)
         binary_img_dir = os.path.join(self.binary_data_dir, image_name)
    
-        image = Image.open(img_dir)
-        binary_image = Image.open(binary_img_dir)
+        image = cv2.imread(img_dir)
+        binary_image = cv2.imread(binary_img_dir)
+        h, w, _ = image.shape
         
-        binary_image = binary_image.resize((image_size, image_size))
-        binary_image = np.array(binary_image)
-        
+        #Augmentation code 
+        scale_factor = round(random.uniform(0.6, 1.2), 2)
+        rot_factor = random.randint(-30, 30)
+	scale_mat = aug_scale_mat(h, w, scale_factor)
+	rot_mat = aug_rotate_mat(h, w, rot_factor)
+	homography = np.matmul(rot_mat, scale_mat)
+	image = warp_image(image, homography, target_h=512, target_w=512)
+	binary_image = warp_image(binary_image, homography, target_h=512, target_w=512)	
+	
+	start_x = random.randint(1, 450)
+	start_y = random.randint(1, 450)
+	image = image[start_x:start_x+64, start_y : start_y+64]
+	binary_image = binary_image[start_x:start_x+64, start_y : start_y+64] 
+
+	binary_image = np.array(binary_image)
+
         binary_image[binary_image >= 0.5] = 1
         binary_image[binary_image < 0.5] = 0
-        
-        binary_image = torch.from_numpy(binary_image)
-        sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}        
+
+	binary_image = torch.from_numpy(binary_image)        
+	sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}        
         if self.transform:
             sample["image"] = self.transform(sample["image"])
             
@@ -70,9 +115,9 @@ hiertext_train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, bi
 hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, binary_data_dir=val_binary_data_dir, transform=transform)
 train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, num_workers=32, shuffle=True, pin_memory=True)
 val_dataloader = DataLoader(hiertext_val_dataset, batch_size=bs, num_workers=32, shuffle=True)
-
-def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
-    print("Training started")
+resize_t = transforms.Resize((300, 300))
+def inference(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
+    print("Inference started")
     model.train()
     optimizer.zero_grad()    
     total_loss = 0 
@@ -80,58 +125,27 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     for batch_idx, data in enumerate(train_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
-        loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
-        total_loss += loss.item()
-        loss.backward()
-    #    if batch_idx % 16 == 0:
-        optimizer.step()
-        xm.mark_step()
-        optimizer.zero_grad()
-        if batch_idx % 50 == 0:
-            print(f"Epoch: {e}, batch_idx: {batch_idx}, num_data: {len(train_dataloader.dataset)}, Loss: {loss}")
-    scheduler.step()    
-    epoch_loss = (total_loss*bs)/len(train_dataloader.dataset)
-    print(f"Epoch: {e}, Epoch Loss: {epoch_loss}")
-    writer.add_scalar('Loss/train', epoch_loss, e)
-    
-    if e % 50 == 0:
-        if os.path.exists('/mnt/researchteam/.local/share/Trash/'):
-            shutil.rmtree('/mnt/researchteam/.local/share/Trash/')            
-        if os.path.exists(f"saved_models/model_scheduler{e-50}.pth"):
-            os.remove(f"saved_models/model_scheduler{e-50}.pth")
-        torch.save(model.to('cpu').state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
-    
-def val(e, model, optimizer, loss_fn, learning_rate, device):
-    print("Validation started")
-    model.eval()
-    val_loss = 0
-    for batch_idx, data in enumerate(val_dataloader):
-        image, binary_image = data["image"].to(device), data["binary_image"].to(device)
-        pred_binary_image = model(image) 
-        loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
-        val_loss += loss.item() 
-        if batch_idx % 100 == 0: 
-            print(f"Epoch: {e}, batch_idx: {batch_idx}, num_data: {len(val_dataloader.dataset)}, Loss: {loss}")
-        
-    epoch_loss = (val_loss*bs)/len(val_dataloader.dataset)
-    print(f"Epoch: {e}, num_data: {len(val_dataloader.dataset)}, Loss: {epoch_loss}")
-    writer.add_scalar('Loss/val', epoch_loss, e)
-    
+        resized_binary_image = resize_t(binary_image)
+        resized_pred_binary_image = resize_t(pred_binary_image)
+        gird_img = torchvision.utils.make_grid(torch.cat([resized_binary_image, resized_pred_binary_image]), nrow=2)
+        torchvision.utils.save_image(grid_img, f"{batch_idx}.jpg")
+        if batch_idx == 10:
+            break
 def main():
     device = xm.xla_device()
     learning_rate = 0.0001 
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model = m1_gmlp.MAXIM_dns_3s().to(device)
     #print(summary(model, (1, 3, image_size, image_size)))
-    optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    model.load_state_dict(torch.load(f"{saved_model}model_scheduler200.pth"))
+    , optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 
-    epoch=500
+    epoch=1
     for e in tqdm(range(epoch)): 
-        train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
-        if e % 5 == 0:
-            val(e+1, model, optimizers, loss_fn, learning_rate, device)
+        inference(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
+
 if __name__ == "__main__":
     # 4x 1 chip (2 cores) per process:
     os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "1,1,1"

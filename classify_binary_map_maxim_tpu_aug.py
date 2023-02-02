@@ -1,7 +1,9 @@
 import os
 import json
+import cv2
 import time 
 import torch
+import random
 import shutil
 import m1_gmlp
 import numpy as np
@@ -9,7 +11,6 @@ import pandas as pd
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import torch_xla.core.xla_model as xm 
-from PIL import Image
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
@@ -25,21 +26,47 @@ val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
 val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
 
-image_size = 128
+image_size = 64
 writer = SummaryWriter()
 transform = transforms.Compose([
-    transforms.Resize((image_size, image_size)), 
+    transforms.ToPILImage(),
+    transforms.Resize((image_size, image_size)),
     transforms.ToTensor()
 ])
-bs = 8
+bs = 32
 
+def aug_scale_mat(height, width, scale_factor):
+
+    centerX = (width) / 2
+    centerY = (height) / 2
+
+    tx = centerX - centerX * scale_factor
+    ty = centerY - centerY * scale_factor
+
+    scale_mat = np.array([[scale_factor, 0, tx], [0, scale_factor, ty], [0., 0., 1.]])
+
+    return scale_mat
+
+def aug_rotate_mat(height, width, angle):
+
+    centerX = (width - 1) / 2
+    centerY = (height - 1) / 2
+
+    rotation_mat = cv2.getRotationMatrix2D((centerX, centerY), angle, 1.0)
+    rotation_mat = np.vstack([rotation_mat, [0., 0., 1.]])
+
+    return rotation_mat
+
+def warp_image(image, homography, target_h, target_w):
+    # homography = np.linalg.inv(homography)
+    return cv2.warpPerspective(image, homography, dsize=tuple((target_w, target_h)))
 
 class HierText(Dataset):
     def __init__(self, csv_file, data_dir, binary_data_dir, transform=None):
         self.data = pd.read_csv(csv_file)
         self.data_dir = data_dir
-        self.binary_data_dir = binary_data_dir 
-        self.transform = transform        
+        self.binary_data_dir = binary_data_dir
+        self.transform = transform
 
     def __len__(self):
         return len(self.data)
@@ -48,24 +75,39 @@ class HierText(Dataset):
         image_name = self.data["image_name"][idx]
         img_dir = os.path.join(self.data_dir, image_name)
         binary_img_dir = os.path.join(self.binary_data_dir, image_name)
-   
-        image = Image.open(img_dir)
-        binary_image = Image.open(binary_img_dir)
-        
-        binary_image = binary_image.resize((image_size, image_size))
+  
+        image = cv2.imread(img_dir)
+        binary_image = cv2.imread(binary_img_dir)
+        h, w, _ = image.shape
+        print(binary_image.shape, "shape")
+        #Augmentation code 
+        scale_factor = round(random.uniform(0.6, 1.2), 2)
+        rot_factor = random.randint(-30, 30)
+        scale_mat = aug_scale_mat(h, w, scale_factor)
+        rot_mat = aug_rotate_mat(h, w, rot_factor)
+        homography = np.matmul(rot_mat, scale_mat)
+        image = warp_image(image, homography, target_h=512, target_w=512)
+        binary_image = warp_image(binary_image, homography, target_h=512, target_w=512)
+
+        start_x = random.randint(1, 450)
+        start_y = random.randint(1, 450)
+        image = image[start_x:start_x+image_size, start_y : start_y+image_size]
+        binary_image = binary_image[start_x:start_x+image_size, start_y : start_y+image_size]
+        print(binary_image.shape)
+        print(image.shape)
         binary_image = np.array(binary_image)
-        
+
         binary_image[binary_image >= 0.5] = 1
         binary_image[binary_image < 0.5] = 0
-        
+
         binary_image = torch.from_numpy(binary_image)
-        sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}        
+        sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}
         if self.transform:
             sample["image"] = self.transform(sample["image"])
-            
+
 
         return sample
-    
+   
 hiertext_train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, binary_data_dir=binary_data_dir, transform=transform)
 hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, binary_data_dir=val_binary_data_dir, transform=transform)
 train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, num_workers=32, shuffle=True, pin_memory=True)
@@ -80,6 +122,8 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     for batch_idx, data in enumerate(train_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
+        print(pred_binary_image.shape, 'pred')
+        break
         loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
         total_loss += loss.item()
         loss.backward()
@@ -130,6 +174,7 @@ def main():
     epoch=500
     for e in tqdm(range(epoch)): 
         train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
+        break
         if e % 5 == 0:
             val(e+1, model, optimizers, loss_fn, learning_rate, device)
 if __name__ == "__main__":
