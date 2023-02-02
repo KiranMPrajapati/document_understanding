@@ -14,10 +14,13 @@ import torch_xla.core.xla_model as xm
 from PIL import Image
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
+import cv2
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 import random
 from torchsummary import summary
+import augmentation
+
 cwd = os.getcwd()
 
 train_data_dir = f'{cwd}/dataset/train'
@@ -28,7 +31,7 @@ val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
 val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
 saved_model = f'{cwd}/saved_models/'
-save_image = f'{cwd}/results/'
+save_image = f'{cwd}/aug_result/'
 
 image_size = 64
 writer = SummaryWriter()
@@ -39,38 +42,12 @@ transform = transforms.Compose([
 ])
 bs = 1
 
-def aug_scale_mat(height, width, scale_factor):
-
-    centerX = (width) / 2
-    centerY = (height) / 2
-
-    tx = centerX - centerX * scale_factor
-    ty = centerY - centerY * scale_factor
-
-    scale_mat = np.array([[scale_factor, 0, tx], [0, scale_factor, ty], [0., 0., 1.]])
-
-    return scale_mat
-
-def aug_rotate_mat(height, width, angle):
-
-    centerX = (width - 1) / 2
-    centerY = (height - 1) / 2
-
-    rotation_mat = cv2.getRotationMatrix2D((centerX, centerY), angle, 1.0)
-    rotation_mat = np.vstack([rotation_mat, [0., 0., 1.]])
-
-    return rotation_mat
-
-def warp_image(image, homography, target_h, target_w):
-    # homography = np.linalg.inv(homography)
-    return cv2.warpPerspective(image, homography, dsize=tuple((target_w, target_h)))
-
 class HierText(Dataset):
     def __init__(self, csv_file, data_dir, binary_data_dir, transform=None):
         self.data = pd.read_csv(csv_file)
         self.data_dir = data_dir
-        self.binary_data_dir = binary_data_dir 
-        self.transform = transform        
+        self.binary_data_dir = binary_data_dir
+        self.transform = transform
 
     def __len__(self):
         return len(self.data)
@@ -79,37 +56,33 @@ class HierText(Dataset):
         image_name = self.data["image_name"][idx]
         img_dir = os.path.join(self.data_dir, image_name)
         binary_img_dir = os.path.join(self.binary_data_dir, image_name)
-   
-        image = cv2.imread(img_dir)
-        binary_image = cv2.imread(binary_img_dir)
-        h, w, _ = image.shape
-        
-        #Augmentation code 
-        scale_factor = round(random.uniform(0.6, 1.2), 2)
-        rot_factor = random.randint(-30, 30)
-	scale_mat = aug_scale_mat(h, w, scale_factor)
-	rot_mat = aug_rotate_mat(h, w, rot_factor)
-	homography = np.matmul(rot_mat, scale_mat)
-	image = warp_image(image, homography, target_h=512, target_w=512)
-	binary_image = warp_image(binary_image, homography, target_h=512, target_w=512)	
-	
-	start_x = random.randint(1, 450)
-	start_y = random.randint(1, 450)
-	image = image[start_x:start_x+64, start_y : start_y+64]
-	binary_image = binary_image[start_x:start_x+64, start_y : start_y+64] 
 
-	binary_image = np.array(binary_image)
+        image = cv2.imread(img_dir)
+        binary_image = cv2.imread(binary_img_dir, cv2.IMREAD_GRAYSCALE)
+
+        h, w, _ = image.shape
+        scale_factor = round(random.uniform(0.8, 1.2), 2)
+        rot_factor = random.randint(-45, 45)
+        scale_mat = augmentation.aug_scale_mat(h, w, scale_factor)
+        rot_mat = augmentation.aug_rotate_mat(h, w, rot_factor)
+        homography = np.matmul(rot_mat, scale_mat)
+        image = augmentation.warp_image(image, homography, target_h=h, target_w=w)
+        binary_image = augmentation.warp_image(binary_image, homography, target_h=h, target_w=w)
+
+        binary_image = cv2.resize(binary_image, (image_size,image_size))
+        binary_image = np.array(binary_image)
 
         binary_image[binary_image >= 0.5] = 1
         binary_image[binary_image < 0.5] = 0
 
-	binary_image = torch.from_numpy(binary_image)        
-	sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}        
+        binary_image = torch.from_numpy(binary_image)
+        sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}
         if self.transform:
             sample["image"] = self.transform(sample["image"])
-            
+
 
         return sample
+
     
 hiertext_train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, binary_data_dir=binary_data_dir, transform=transform)
 hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, binary_data_dir=val_binary_data_dir, transform=transform)
@@ -125,9 +98,10 @@ def inference(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     for batch_idx, data in enumerate(train_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
-        resized_binary_image = resize_t(binary_image)
-        resized_pred_binary_image = resize_t(pred_binary_image)
-        gird_img = torchvision.utils.make_grid(torch.cat([resized_binary_image, resized_pred_binary_image]), nrow=2)
+        resized_binary_image = resize_t(binary_image.unsqueeze(1)).to('cpu')
+        resized_pred_binary_image = resize_t(pred_binary_image).to('cpu')
+        final_image = torch.cat([resized_binary_image, resized_pred_binary_image])
+        grid_img = torchvision.utils.make_grid(final_image, nrow=2)
         torchvision.utils.save_image(grid_img, f"{batch_idx}.jpg")
         if batch_idx == 10:
             break
@@ -137,8 +111,8 @@ def main():
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model = m1_gmlp.MAXIM_dns_3s().to(device)
     #print(summary(model, (1, 3, image_size, image_size)))
-    model.load_state_dict(torch.load(f"{saved_model}model_scheduler200.pth"))
-    , optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    model.load_state_dict(torch.load(f"{saved_model}model_scheduler5.pth"))
+    optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 

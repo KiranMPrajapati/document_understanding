@@ -25,8 +25,10 @@ binary_data_dir = f'{cwd}/dataset/binary_train/'
 val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
 val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
+saved_images = f"{cwd}/test/"
 
 image_size = 64
+
 writer = SummaryWriter()
 transform = transforms.Compose([
     transforms.ToPILImage(),
@@ -75,26 +77,20 @@ class HierText(Dataset):
         image_name = self.data["image_name"][idx]
         img_dir = os.path.join(self.data_dir, image_name)
         binary_img_dir = os.path.join(self.binary_data_dir, image_name)
-  
+
         image = cv2.imread(img_dir)
-        binary_image = cv2.imread(binary_img_dir)
+        binary_image = cv2.imread(binary_img_dir, cv2.IMREAD_GRAYSCALE)
+
         h, w, _ = image.shape
-        print(binary_image.shape, "shape")
-        #Augmentation code 
-        scale_factor = round(random.uniform(0.6, 1.2), 2)
-        rot_factor = random.randint(-30, 30)
+        scale_factor = round(random.uniform(0.8, 1.2), 2)
+        rot_factor = random.randint(-45, 45)
         scale_mat = aug_scale_mat(h, w, scale_factor)
         rot_mat = aug_rotate_mat(h, w, rot_factor)
         homography = np.matmul(rot_mat, scale_mat)
-        image = warp_image(image, homography, target_h=512, target_w=512)
-        binary_image = warp_image(binary_image, homography, target_h=512, target_w=512)
+        image = warp_image(image, homography, target_h=h, target_w=w)
+        binary_image = warp_image(binary_image, homography, target_h=h, target_w=w)
 
-        start_x = random.randint(1, 450)
-        start_y = random.randint(1, 450)
-        image = image[start_x:start_x+image_size, start_y : start_y+image_size]
-        binary_image = binary_image[start_x:start_x+image_size, start_y : start_y+image_size]
-        print(binary_image.shape)
-        print(image.shape)
+        binary_image = cv2.resize(binary_image, (image_size,image_size))
         binary_image = np.array(binary_image)
 
         binary_image[binary_image >= 0.5] = 1
@@ -105,9 +101,9 @@ class HierText(Dataset):
         if self.transform:
             sample["image"] = self.transform(sample["image"])
 
-
         return sample
-   
+
+
 hiertext_train_dataset = HierText(csv_file=csv_file, data_dir=train_data_dir, binary_data_dir=binary_data_dir, transform=transform)
 hiertext_val_dataset = HierText(csv_file=val_csv_file, data_dir=val_data_dir, binary_data_dir=val_binary_data_dir, transform=transform)
 train_dataloader = DataLoader(hiertext_train_dataset, batch_size=bs, num_workers=32, shuffle=True, pin_memory=True)
@@ -122,12 +118,9 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     for batch_idx, data in enumerate(train_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
-        print(pred_binary_image.shape, 'pred')
-        break
         loss = loss_fn(pred_binary_image, binary_image.unsqueeze(1))
         total_loss += loss.item()
         loss.backward()
-    #    if batch_idx % 16 == 0:
         optimizer.step()
         xm.mark_step()
         optimizer.zero_grad()
@@ -143,7 +136,7 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
             shutil.rmtree('/mnt/researchteam/.local/share/Trash/')            
         if os.path.exists(f"saved_models/model_scheduler{e-50}.pth"):
             os.remove(f"saved_models/model_scheduler{e-50}.pth")
-        torch.save(model.to('cpu').state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
+        torch.save(model.state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
     
 def val(e, model, optimizer, loss_fn, learning_rate, device):
     print("Validation started")
@@ -166,7 +159,6 @@ def main():
     learning_rate = 0.0001 
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model = m1_gmlp.MAXIM_dns_3s().to(device)
-    #print(summary(model, (1, 3, image_size, image_size)))
     optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
@@ -174,7 +166,6 @@ def main():
     epoch=500
     for e in tqdm(range(epoch)): 
         train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
-        break
         if e % 5 == 0:
             val(e+1, model, optimizers, loss_fn, learning_rate, device)
 if __name__ == "__main__":
