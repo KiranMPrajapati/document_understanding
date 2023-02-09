@@ -12,6 +12,7 @@ import torch_xla.core.xla_model as xm
 import torch_xla.debug.metrics as met
 import torch_xla.distributed.parallel_loader as pl
 import torch_xla.distributed.xla_multiprocessing as xmp
+from PIL import Image
 import torch_xla.utils.utils as xu
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
@@ -86,8 +87,8 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device, rank):
     optimizer.zero_grad()    
     total_loss = 0 
     para_loader = pl.ParallelLoader(train_dataloader, [device])
-    print(para_loader.per_device_loader(train_dataloader))
-    for batch_idx, data in enumerate(para_loader.per_device_loader(train_dataloader)):
+   # print(para_loader.per_device_loader(device))
+    for batch_idx, data in enumerate(para_loader.per_device_loader(device)):
         print('data')
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
@@ -117,7 +118,7 @@ def val(e, model, optimizer, loss_fn, learning_rate, device, rank):
     val_loss = 0
     para_loader = pl.ParallelLoader(val_dataloader, [device])
     
-    for batch_idx, data in enumerate(para_loader.per_device_loader(val_dataloader)):
+    for batch_idx, data in enumerate(para_loader.per_device_loader(device)):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
         loss = loss_fn(pred_binary_image, binary_image)

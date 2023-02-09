@@ -26,4 +26,10 @@ def aug_rotate_mat(height, width, angle):
 def warp_image(image, homography, target_h, target_w):
     # homography = np.linalg.inv(homography)
     return cv2.warpPerspective(image, homography, dsize=tuple((target_w, target_h)))
+def center_crop(image, h, w):
+    center = image.shape
+    x = center[1]/2 - w/2
+    y = center[0]/2 - h/2
 
+    crop_img = image[int(y):int(y+h), int(x):int(x+w)]
+    return crop_img

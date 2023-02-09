@@ -63,6 +63,14 @@ def warp_image(image, homography, target_h, target_w):
     # homography = np.linalg.inv(homography)
     return cv2.warpPerspective(image, homography, dsize=tuple((target_w, target_h)))
 
+def center_crop(image, h, w):
+    center = image.shape
+    x = center[1]/2 - w/2
+    y = center[0]/2 - h/2
+
+    crop_img = image[int(y):int(y+h), int(x):int(x+w)]
+    return crop_img
+
 class HierText(Dataset):
     def __init__(self, csv_file, data_dir, binary_data_dir, transform=None):
         self.data = pd.read_csv(csv_file)
@@ -89,6 +97,9 @@ class HierText(Dataset):
         homography = np.matmul(rot_mat, scale_mat)
         image = warp_image(image, homography, target_h=h, target_w=w)
         binary_image = warp_image(binary_image, homography, target_h=h, target_w=w)
+        
+        binary_image = center_crop(binary_image, 512, 512)
+        image = center_crop(image, 512, 512)
 
         binary_image = cv2.resize(binary_image, (image_size,image_size))
         binary_image = np.array(binary_image)
@@ -100,6 +111,7 @@ class HierText(Dataset):
         sample = {"image": image, "binary_image": binary_image.float(), "image_name": image_name}
         if self.transform:
             sample["image"] = self.transform(sample["image"])
+
 
         return sample
 
@@ -136,8 +148,9 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
             shutil.rmtree('/mnt/researchteam/.local/share/Trash/')            
         if os.path.exists(f"saved_models/model_scheduler{e-50}.pth"):
             os.remove(f"saved_models/model_scheduler{e-50}.pth")
-        torch.save(model.state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
-    
+        torch.save(model.to('cpu').state_dict(), f"{cwd}/saved_models/model_scheduler{e}.pth")
+        model.to(device)
+        
 def val(e, model, optimizer, loss_fn, learning_rate, device):
     print("Validation started")
     model.eval()

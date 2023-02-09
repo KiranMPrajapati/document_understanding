@@ -68,6 +68,8 @@ class HierText(Dataset):
         homography = np.matmul(rot_mat, scale_mat)
         image = augmentation.warp_image(image, homography, target_h=h, target_w=w)
         binary_image = augmentation.warp_image(binary_image, homography, target_h=h, target_w=w)
+	binary_image = center_crop(binary_image, 512, 512)
+        image = center_crop(image, 512, 512)
 
         binary_image = cv2.resize(binary_image, (image_size,image_size))
         binary_image = np.array(binary_image)
@@ -98,11 +100,17 @@ def inference(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     for batch_idx, data in enumerate(train_dataloader):
         image, binary_image = data["image"].to(device), data["binary_image"].to(device)
         pred_binary_image = model(image) 
-        resized_binary_image = resize_t(binary_image.unsqueeze(1)).to('cpu')
-        resized_pred_binary_image = resize_t(pred_binary_image).to('cpu')
-        final_image = torch.cat([resized_binary_image, resized_pred_binary_image])
-        grid_img = torchvision.utils.make_grid(final_image, nrow=2)
-        torchvision.utils.save_image(grid_img, f"{batch_idx}.jpg")
+        #resized_binary_image = resize_t(binary_image.unsqueeze(1)*255.0).to('cpu')
+        #binary_image = binary_image.unsqueeze(1)
+        #resized_pred_binary_image = resize_t(pred_binary_image*255.0).to('cpu')
+        #final_image = torch.cat([binary_image, pred_binary_image])
+        #grid_img = torchvision.utils.make_grid(final_image, nrow=2)
+        #torchvision.utils.save_image(grid_img, f"{batch_idx}.jpg")
+        print(binary_image.shape, "binary image shape")
+        print(pred_binary_image.shape, "pred_shape")
+        plt.imsave(f"{save_image}real{batch_idx}.jpg", image.to('cpu')[0].detach().permute(2,1,0).numpy())
+        plt.imsave(f"{save_image}act{batch_idx}.jpg", binary_image.to('cpu')[0].detach().permute(1,0).numpy()*255.0, cmap="gray")
+        plt.imsave(f"{save_image}pred{batch_idx}.jpg", pred_binary_image.to('cpu')[0].squeeze().detach().permute(1,0).numpy()*255.0, cmap="gray")
         if batch_idx == 10:
             break
 def main():
