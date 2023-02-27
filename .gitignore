@@ -1,4 +1,8 @@
+__pycache__/
 hiertext/
 dataset/
 saved_models/
 runs/
+*.jpg
+aug_result/
+.venv/

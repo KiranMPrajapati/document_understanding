@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import torchvision
+import torchmetrics
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
@@ -19,8 +21,8 @@ cwd = os.getcwd()
 
 train_data_dir = f'{cwd}/dataset/train'
 val_data_dir = f'{cwd}/dataset/validation'
-binary_data_dir = f'{cwd}/dataset/edge_detected_dilated_train/'
-val_binary_data_dir = f'{cwd}/dataset/edge_detected_dilated_val/'
+binary_data_dir = f'{cwd}/dataset/binary_train/'
+val_binary_data_dir = f'{cwd}/dataset/binary_val/'
 csv_file = f'{cwd}/hiertext/gt/hiertext.csv' 
 val_csv_file = f'{cwd}/hiertext/gt/val_hiertext.csv'
 saved_images = f"{cwd}/test/"
@@ -33,7 +35,7 @@ transform = transforms.Compose([
     transforms.Resize((image_size, image_size)),
     transforms.ToTensor()
 ])
-bs = 4
+bs = 8
 
 def aug_scale_mat(height, width, scale_factor):
 
@@ -131,7 +133,7 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
         total_loss += loss.item()
         loss.backward()
        # #print(f"Stop time: {time.asctime()}")
-        if batch_idx % 4 == 0: 
+        if batch_idx % 2 == 0: 
             optimizer.step()
             optimizer.zero_grad()
         if batch_idx % 200 == 0:
@@ -144,9 +146,9 @@ def train(e, model, optimizer, loss_fn, learning_rate, scheduler, device):
     if e % 50 == 0:
         if os.path.exists('/mnt/researchteam/.local/share/Trash/'):
             shutil.rmtree('/mnt/researchteam/.local/share/Trash/')            
-        if os.path.exists(f"saved_models/12_model_gmlp{e-50}.pth"):
-            os.remove(f"saved_models/12_model_gmlp{e-50}.pth")
-        torch.save(model.state_dict(), f"{cwd}/saved_models/12_model_gmlp{e}.pth")
+        if os.path.exists(f"saved_models/model_gmlp{e-50}.pth"):
+            os.remove(f"saved_models/model_gmlp{e-50}.pth")
+        torch.save(model.state_dict(), f"{cwd}/saved_models/model_gmlp{e}.pth")
         
 def val(e, model, optimizer, loss_fn, learning_rate, device):
     print(f"Validation started {e}")
@@ -164,24 +166,99 @@ def val(e, model, optimizer, loss_fn, learning_rate, device):
     epoch_loss = (val_loss*bs)/len(val_dataloader.dataset)
     print(f"Epoch: {e}, num_data: {len(val_dataloader.dataset)}, Loss: {epoch_loss}")
     writer.add_scalar('Loss/val', epoch_loss, e)
+
+save_image = f'{cwd}/aug_result/'
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#f1 = torchmetrics.classification.BinaryF1Score(multidim_average='samplewise').to(device)
+#precision = torchmetrics.classification.BinaryPrecision(multidim_average='samplewise').to(device)
+#recall = torchmetrics.classification.BinaryRecall(multidim_average='samplewise').to(device)
+accuracy = torchmetrics.Accuracy(task="binary", average='micro', num_classes=2).to(device)
+stat_scores = torchmetrics.StatScores(task="binary", average='micro').to(device)
+
+
+m = nn.Sigmoid()
+def inference(model, device, dataloader, dataset_type):
+    print("Inference started")
+    print(f"Start time: {time.asctime()}")
+    #total_f1_score = 0 
+    #total_precision_score = 0
+    #total_recall_score = 0
+    total_accuracy_score = 0
     
+    total_tp = 0
+    total_fp = 0
+    total_tn = 0 
+    total_fn = 0 
+    count_idx = 0 
+    print(len(dataloader.dataset))
+    for batch_idx, data in enumerate(dataloader):
+        image, binary_image = data["image"].to(device), data["binary_image"].to(device)
+        pred_binary_image = model(image)
+        pred_binary_image = m(pred_binary_image)
+        pred_binary_image = (pred_binary_image>0.5).float()
+
+        #precision_score = precision(pred_binary_image, binary_image.unsqueeze(1))
+        #recall_score = recall(pred_binary_image, binary_image.unsqueeze(1))
+        accuracy_score = accuracy(pred_binary_image, binary_image.unsqueeze(1))
+        #f1_score = f1(pred_binary_image, binary_image.unsqueeze(1))    
+        tp, fp, tn, fn, _ = stat_scores(pred_binary_image, binary_image.unsqueeze(1))
+        #total_f1_score += f1_score 
+        #total_precision_score += precision_score
+        #total_recall_score += recall_score
+        total_accuracy_score += accuracy_score.item() *100
+        
+        total_tp += tp
+        total_fp += fp
+        total_tn += tn
+        total_fn += fn
+        count_idx += len(data)
+
+        #final_image = torch.cat([binary_image.unsqueeze(1), pred_binary_image])
+        #grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
+        #torchvision.utils.save_image(grid_image, f"{save_image}{batch_idx}.jpg")
+        #plt.imsave(f"{save_image}real{batch_idx}.jpg", image.to('cpu')[0].detach().permute(2,1,0).numpy())
+        #if batch_idx == 50:
+        #    break
+    #avg_f1_score = total_f1_score / len(dataloader.dataset) 
+    #avg_precision_score = total_precision_score / len(dataloader.dataset)
+    #avg_recall_score = total_recall_score/ len(dataloader.dataset)
+    avg_accuracy_score = total_accuracy_score / len(dataloader.dataset)
+    print(total_accuracy_score)    
+    avg_tp = total_tp / count_idx
+    avg_fp = total_fp / count_idx
+    avg_tn = total_tn / count_idx
+    avg_fn = total_fn / count_idx 
+
+    avg_precision_score = avg_tp / (avg_tp + avg_fp)
+    avg_recall_score = avg_tp / (avg_tp + avg_fn)
+    avg_f1_score = 2 * ((avg_precision_score * avg_recall_score)/ (avg_precision_score + avg_recall_score))
+    print(f"****{dataset_type}******")
+    print(f"Precision: {avg_precision_score}")
+    print(f"Recall: {avg_recall_score}")
+    print(f"Accuracy: {avg_accuracy_score}")
+    print(f"F1 score: {avg_f1_score}")
+    print('\n')
+
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     learning_rate = 0.0001
-    print(device)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model = unet_with_gmlp.DVQAModel().to(device)
-    #model = m1_gmlp. MAXIM_dns_3s().to(device)
-    #model.load_state_dict(torch.load(f"{cwd}/saved_models/12_model_gmlp300_binary_image.pth"))
+    #model = m1_gmlp.MAXIM_dns_3s().to(device)
+    model.load_state_dict(torch.load(f"{cwd}/saved_models/12_model_gmlp300_binary_image.pth"))
     optimizers = torch.optim.Adam(model.parameters(), lr=learning_rate)
     decayRate = 0.96
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
 
-    epoch=300
-    for e in tqdm(range(epoch)): 
-        train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
+    epoch=1
+    
+    inference(model, device, train_dataloader, "train")
+    inference(model, device, val_dataloader, "val")
+    #for e in tqdm(range(epoch)): 
+    #    train(e+1, model, optimizers, loss_fn, learning_rate, scheduler, device)
 
-    #    if e % 20 == 0:
-        #val(e+1, model, optimizers, loss_fn, learning_rate, device)
+        #if e % 20 == 0:
+    #    val(e+1, model, optimizers, loss_fn, learning_rate, device)
 if __name__ == "__main__":
     main()

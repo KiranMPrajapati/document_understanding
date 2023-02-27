@@ -1,4 +1,4 @@
-mport einops
+import einops
 import torch
 import torch.nn as nn
 
@@ -284,7 +284,7 @@ class UNetDecoderBlock(nn.Module):
         return x
     
 class DVQAModel(nn.Module):
-    def __init__(self, channels=8, use_bias=True):
+    def __init__(self, channels=12, use_bias=True):
         super().__init__()
 
         self.channels = channels
