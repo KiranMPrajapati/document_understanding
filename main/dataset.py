@@ -9,6 +9,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 
+import augmentation as aug
 import constants
 
 transform = transforms.Compose([
@@ -17,27 +18,7 @@ transform = transforms.Compose([
     transforms.ToTensor()
 ])
 
-def aug_scale_mat(height, width, scale_factor):
 
-    centerX = (width) / 2
-    centerY = (height) / 2
-
-    tx = centerX - centerX * scale_factor
-    ty = centerY - centerY * scale_factor
-
-    scale_mat = np.array([[scale_factor, 0, tx], [0, scale_factor, ty], [0., 0., 1.]])
-
-    return scale_mat
-
-def aug_rotate_mat(height, width, angle):
-
-    centerX = (width - 1) / 2
-    centerY = (height - 1) / 2
-
-    rotation_mat = cv2.getRotationMatrix2D((centerX, centerY), angle, 1.0)
-    rotation_mat = np.vstack([rotation_mat, [0., 0., 1.]])
-
-    return rotation_mat
 
 def warp_image(image, homography, target_h, target_w):
     return cv2.warpPerspective(image, homography, dsize=tuple((target_w, target_h)))
@@ -56,9 +37,113 @@ class HierText(Dataset):
         self.data_dir = data_dir
         self.binary_data_dir = binary_data_dir
         self.transform = transform
+        self.random_state = np.random.RandomState(27)
 
     def __len__(self):
         return len(self.data)
+    
+    def perspective_distortion_mat(self, height, width):
+
+        height, width = height, width
+
+        aug_choice = np.random.default_rng().choice(['rotate', 'shear', 'elation', 'translate'])
+
+        if aug_choice == 'rotate':
+
+            scale_aug_values = self.random_state.uniform(0.6, 1.1, 1)
+
+            if scale_aug_values <= 0.7:
+                rot_choice = np.random.default_rng().choice([(-30.0, -20.0), (20.0, 30.0)])
+            elif scale_aug_values <= 0.8:
+                rot_choice = np.random.default_rng().choice([(-25.0, -10.0), (10.0, 25.0)])
+            elif scale_aug_values <= 0.9:
+                rot_choice = np.random.default_rng().choice([(-15.0, -5.0), (5.0, 15.0)])
+            elif scale_aug_values <= 1.0: 
+                rot_choice = (-10.0, 10.0)
+            else:
+                rot_choice = (-5.0, 5.0)
+
+            rotate_aug_values = self.random_state.uniform(rot_choice[0], rot_choice[1], 1)
+
+            scale_aug_values = np.float64(scale_aug_values)
+            rotate_aug_values = np.float64(rotate_aug_values) 
+
+            scale_mat = aug.scale_mat(height, width, scale_aug_values)
+            rot_mat = aug.rotate_mat(height, width, rotate_aug_values)
+
+            homography = np.matmul(rot_mat, scale_mat)
+            aug_type = {'rotation' : {'scaling': scale_aug_values, 'rotation': rotate_aug_values}}
+
+        elif aug_choice == 'shear':
+
+            scale_aug_values = self.random_state.uniform(0.8, 1.05, 1)
+
+            if scale_aug_values <= 0.9:
+                shear_choice = np.random.default_rng().choice([(-0.3, -0.1), (0.1, 0.3)])
+            elif scale_aug_values <= 1.0: 
+                shear_choice = (-0.1, 0.1)
+            else:
+                shear_choice = (-0.05, 0.05)
+
+            shear_aug_values = self.random_state.uniform(shear_choice[0], shear_choice[1], 1)
+
+            scale_aug_values = np.float64(scale_aug_values)
+            shear_aug_values = np.float64(shear_aug_values) 
+
+            scale_mat = aug.scale_mat(height, width, scale_aug_values)
+            shear_mat = aug.shear_mat(height, width, shear_aug_values)
+
+            homography = np.matmul(shear_mat, scale_mat)
+            aug_type = {'shearing': {'scaling': scale_aug_values, 'shearing': shear_aug_values}}
+ 
+        elif aug_choice == 'translate':
+
+            scale_aug_values = self.random_state.uniform(0.8, 1.05, 1)
+
+            horizontal_choice = (-30, 30)
+            vertical_choice = (-30, 30)
+
+            horizontal_aug_values = self.random_state.uniform(horizontal_choice[0], horizontal_choice[1], 1)
+            vertical_aug_values = self.random_state.uniform(vertical_choice[0], vertical_choice[1], 1)
+
+            scale_aug_values = np.float64(scale_aug_values)
+            horizontal_aug_values = np.float64(horizontal_aug_values) 
+            vertical_aug_values = np.float64(vertical_aug_values) 
+
+            scale_mat = aug.scale_mat(height, width, scale_aug_values)
+            translate_mat = aug.translate_mat(horizontal_aug_values, vertical_aug_values)
+
+            homography = np.matmul(translate_mat, scale_mat)
+            aug_type = {'translation': {'scaling': scale_aug_values, 'translation_x': horizontal_aug_values, 'translation_y': vertical_aug_values}}
+
+        elif aug_choice == 'elation':
+
+            scale_aug_values = self.random_state.uniform(0.8, 1.05, 1)
+
+            if scale_aug_values <= 0.9:
+                elation_x_choice = np.random.default_rng().choice([(-0.0003, -0.0002), (0.0002, 0.0003)])
+                elation_y_choice = np.random.default_rng().choice([(-0.0003, -0.0002), (0.0002, 0.0003)])
+            elif scale_aug_values <= 1.0: 
+                elation_x_choice = np.random.default_rng().choice([(-0.0002, -0.00015), (0.00015, 0.0002)])
+                elation_y_choice = np.random.default_rng().choice([(-0.0002, -0.00015), (0.00015, 0.0002)])
+            else:
+                elation_x_choice = (-0.00015, 0.000015)
+                elation_y_choice = (-0.00015, 0.000015)
+
+            elation_x_aug_values = self.random_state.uniform(elation_x_choice[0], elation_x_choice[1], 1)
+            elation_y_aug_values = self.random_state.uniform(elation_y_choice[0], elation_y_choice[1], 1)
+
+            scale_aug_values = np.float64(scale_aug_values)
+            elation_x_aug_values = np.float64(elation_x_aug_values)
+            elation_y_aug_values = np.float64(elation_y_aug_values)
+
+            scale_mat = aug.scale_mat(height, width, scale_aug_values)
+            elation_mat = aug.elation_mat(height, width, elation_x_aug_values, elation_y_aug_values)
+
+            homography = np.matmul(elation_mat, scale_mat)
+            aug_type = {'elation': {'scaling': scale_aug_values, 'elation_x': elation_x_aug_values, 'elation_y': elation_y_aug_values}}
+
+        return homography, aug_type
 
     def __getitem__(self, idx):
         image_name = self.data["image_name"][idx]
@@ -68,12 +153,9 @@ class HierText(Dataset):
         image = cv2.imread(img_dir)
         binary_image = cv2.imread(binary_img_dir, cv2.IMREAD_GRAYSCALE)
         
-        h, w, _ = image.shape
-        scale_factor = round(random.uniform(0.8, 1.2), 2)
-        rot_factor = random.randint(-45, 45)
-        scale_mat = aug_scale_mat(h, w, scale_factor)
-        rot_mat = aug_rotate_mat(h, w, rot_factor)
-        homography = np.matmul(rot_mat, scale_mat)
+        h, w = image.shape[:2]
+        
+        homography, _ = self.perspective_distortion_mat(h, w)
         image = warp_image(image, homography, target_h=h, target_w=w)
         binary_image = warp_image(binary_image, homography, target_h=h, target_w=w)
 

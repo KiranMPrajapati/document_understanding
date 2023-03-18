@@ -6,3 +6,6 @@ runs/
 *.jpg
 aug_result/
 .venv/
+out/
+notebooks/
+data/

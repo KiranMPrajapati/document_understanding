@@ -1,20 +1,22 @@
-import cv2
 import time 
 import torch
-import random
 import argparse
+import torchvision
 import numpy as np
-import pandas as pd
 import torch.nn as nn
+import matplotlib.pyplot as plt 
 
 from pathlib import Path
 from tqdm import tqdm 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
+from torch.nn import functional as F 
 
 import unet_with_gmlp
+import nafnet
 import constants
+from losses import DiceLoss, TverskyLoss
 from dataset import HierText
 
 torch.manual_seed(27)
@@ -27,6 +29,14 @@ def train(args):
     if not model_save_dir.exists():
         model_save_dir.mkdir(parents=True, exist_ok=True)
         
+    save_train_image_dir = args['run_dir'] / 'train_images'
+    save_val_image_dir = args['run_dir'] / 'val_images'
+        
+    if not save_train_image_dir.exists():
+        save_train_image_dir.mkdir(parents=True, exist_ok=True)
+    if not save_val_image_dir.exists():
+        save_val_image_dir.mkdir(parents=True, exist_ok=True)
+        
     writer = SummaryWriter(str(args['run_dir'] / 'logs'))
     
     device = args["device"]
@@ -37,13 +47,21 @@ def train(args):
     val_dataloader = DataLoader(val_dataset, batch_size=constants.BATCH_SIZE, num_workers=constants.NUM_WORKERS, shuffle=False, pin_memory=True)
     
     model = unet_with_gmlp.DVQAModel().to(device)
+#     img_channel = 3
+#     width = 32
 
-    optimizers = torch.optim.Adam(model.parameters(), lr=args["learning_rate"])
-    decayRate = 0.96
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
+#     enc_blks = [1, 1, 2, 4]
+#     middle_blk_num = 2
+#     dec_blks = [1, 1, 1, 1]
+
+#     model = nafnet.NAFNet(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num, enc_blk_nums=enc_blks, dec_blk_nums=dec_blks).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=args["learning_rate"])
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args["decayRate"])
+    diceloss_fn = DiceLoss()
     
     scaler = torch.cuda.amp.GradScaler(enabled=True)
-
+    
     model_save_path = model_save_dir / 'model.pth'
     start_epoch = 0
     
@@ -70,22 +88,31 @@ def train(args):
                     weight_map = batch["weight_map"].to(device)
 
                     outputs = model(image)
-                    loss_fn = torch.nn.BCEWithLogitsLoss(weight=weight_map)
-                    loss = loss_fn(outputs, binary_image)
+                    loss = constants.BCE_LOSS_WEIGHT * F.binary_cross_entropy_with_logits(outputs.squeeze(), binary_image.squeeze(), weight=weight_map.squeeze()) + constants.DICE_LOSS_WEIGHT * diceloss_fn(outputs.squeeze(), binary_image.squeeze())
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
 
                 train_loss += loss.item()
-                print(train_loss)
 
                 tepoch.set_postfix(loss=loss.item())
 
         train_loss /= len(train_dataloader)
         scheduler.step()
         
+        writer.add_scalars("loss", {
+                "train_loss": train_loss}, epoch)
+        
+       
         if (epoch+1) % 10 == 0:
+            state = {'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'scaler': scaler.state_dict(),
+                    'epoch': epoch}
+            torch.save(state, model_save_path)
+            
             with torch.no_grad():
                 model.eval()
                 val_loss = 0.0
@@ -98,8 +125,7 @@ def train(args):
                         weight_map = batch["weight_map"].to(device)
 
                         outputs = model(image)
-                        loss_fn = torch.nn.BCEWithLogitsLoss(weight=weight_map)
-                        loss = loss_fn(outputs, binary_image)
+                        loss = constants.BCE_LOSS_WEIGHT * F.binary_cross_entropy_with_logits(outputs.squeeze(), binary_image.squeeze(), weight=weight_map.squeeze()) + constants.DICE_LOSS_WEIGHT * diceloss_fn(outputs.squeeze(), binary_image.squeeze())
 
                         val_loss += loss.item()
                    
@@ -115,12 +141,49 @@ def train(args):
                 "train_loss": train_loss,
                 "val_loss": val_loss}, epoch)
 
-            state = {'model': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict(),
-                    'scaler': scaler.state_dict(),
-                    'epoch': epoch}
-            torch.save(state, model_save_path)
+            
+        if (epoch+1) % 50 == 0:
+            with torch.no_grad():
+                model.eval()
+                with tqdm(train_dataloader, unit="batch") as tepoch:
+                        for idx, batch in enumerate(tepoch):
+                            tepoch.set_description(f"Started Saving train Image")
+                            image = batch['image'].to(device)
+                            binary_image = batch['binary_image'].to(device)
+
+                            outputs = model(image)
+                            outputs = torch.sigmoid(outputs)
+                            outputs[outputs>=0.5]=1
+                            outputs[outputs<0.5]=0
+
+                            final_image = torch.cat([binary_image[0], outputs[0]])
+                            grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
+
+                            torchvision.utils.save_image(grid_image, f"{save_train_image_dir}/{idx}.jpg")
+                            plt.imsave(f"{save_train_image_dir}/real{idx}.jpg", image.to('cpu')[0].detach().permute(1,2,0).numpy())
+                            if idx == 100:
+                                break
+
+
+                with tqdm(val_dataloader, unit="batch") as tepoch:
+                    for idx, batch in enumerate(tepoch):
+                        tepoch.set_description(f"Started Saving val Image")
+                        image = batch['image'].to(device)
+                        binary_image = batch['binary_image'].to(device)
+
+                        outputs = model(image)
+                        outputs = torch.sigmoid(outputs)
+                        outputs[outputs>=0.5]=1
+                        outputs[outputs<0.5]=0
+
+                        final_image = torch.cat([binary_image[0], outputs[0]])
+                        grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
+
+                        torchvision.utils.save_image(grid_image, f"{save_val_image_dir}/{idx}.jpg")
+                        plt.imsave(f"{save_val_image_dir}/real{idx}.jpg", image.to('cpu')[0].detach().permute(1,2,0).numpy())
+                        if idx == 100:
+                            break
+            
         
         print('***********************')
 
@@ -143,19 +206,11 @@ if __name__ == "__main__":
             transforms.ToTensor()
         ])
     
-    args['epochs'] = 1
+    args['epochs'] = 220
     args['learning_rate'] = 0.0001
+    args['decayRate'] = 0.96
     
-#     args['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
-    args['device'] = 'cpu'
-
-
-#     args['model'] = unet_with_gmlp.DVQAModel().to(device)
-
-#     args['optimizers'] = torch.optim.Adam(model.parameters(), lr=learning_rate)
-#     args['decayRate'] = 0.96
-#     args['scheduler'] = torch.optim.lr_scheduler.ExponentialLR(optimizers, gamma= decayRate)
- 
+    args['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_dir", type=str, required=False, default='')
 
