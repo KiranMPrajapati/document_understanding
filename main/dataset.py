@@ -5,6 +5,7 @@ import torch
 import random
 import numpy as np
 import pandas as pd
+from PIL import Image
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
@@ -13,7 +14,7 @@ import augmentation as aug
 import constants
 
 transform = transforms.Compose([
-    transforms.ToPILImage(),
+    transforms.PILToTensor(),
     transforms.Resize((constants.IMAGE_SIZE, constants.IMAGE_SIZE)),
     transforms.ToTensor()
 ])
@@ -144,6 +145,20 @@ class HierText(Dataset):
             aug_type = {'elation': {'scaling': scale_aug_values, 'elation_x': elation_x_aug_values, 'elation_y': elation_y_aug_values}}
 
         return homography, aug_type
+    
+    def compute_weight_map(self, binary_image):
+        weight_map = np.zeros_like(binary_image)
+        number_of_white_pix = np.sum(binary_image == 1) 
+        number_of_black_pix = np.sum(binary_image == 0) 
+        
+        total_pixels = number_of_white_pix + number_of_black_pix
+        weight_of_white_pix = 1 - (number_of_white_pix / total_pixels)
+        weight_of_black_pix = 1 - (number_of_black_pix / total_pixels)
+        
+        weight_map = np.where(binary_image==1, weight_of_white_pix, weight_map)
+        weight_map = np.where(binary_image==0, weight_of_black_pix, weight_map)
+        
+        return weight_map
 
     def __getitem__(self, idx):
         image_name = self.data["image_name"][idx]
@@ -157,31 +172,31 @@ class HierText(Dataset):
         
         homography, _ = self.perspective_distortion_mat(h, w)
         image = warp_image(image, homography, target_h=h, target_w=w)
-        binary_image = warp_image(binary_image, homography, target_h=h, target_w=w)
+        binary_image = warp_image(binary_image, homography, target_h=h, target_w=w)        
 
         binary_image = cv2.resize(binary_image, (constants.IMAGE_SIZE, constants.IMAGE_SIZE))
+        
+        if np.random.uniform() < 0.5:
+            image = aug.apply_random_drop(image)
+
+        if np.random.uniform() < 1:
+            distort_transform = aug.gaussian_distortion()
+            binary_image = distort_transform(Image.fromarray(binary_image))
+            image = distort_transform(Image.fromarray(image))
+        
         binary_image = np.array(binary_image)
         binary_image[binary_image>=0.5]=1
         binary_image[binary_image<0.5]=0
-        
-        weight_map = np.zeros_like(binary_image)
-        number_of_white_pix = np.sum(binary_image == 1) 
-        number_of_black_pix = np.sum(binary_image == 0) 
-        
-        total_pixels = number_of_white_pix + number_of_black_pix
-        weight_of_white_pix = 1 - (number_of_white_pix / total_pixels)
-        weight_of_black_pix = 1 - (number_of_black_pix / total_pixels)
-        
-        weight_map = np.where(binary_image==1, weight_of_white_pix, weight_map)
-        weight_map = np.where(binary_image==0, weight_of_black_pix, weight_map)
+
+        weight_map = self.compute_weight_map(binary_image)
         
         binary_image = torch.from_numpy(binary_image)
         weight_map = torch.from_numpy(weight_map)
-        
+                
         sample = {"image": image, "binary_image": binary_image.float().squeeze(), "image_name": image_name, "weight_map": weight_map.squeeze()}
         
         if self.transform:
-            sample["image"] = self.transform(sample["image"])
+            sample["image"] = self.transform(np.array(sample["image"]))
         return sample
     
 if __name__ == "__main__":

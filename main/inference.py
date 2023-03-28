@@ -12,7 +12,7 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
-import unet_with_gmlp
+import gmlp_unet_concat as gmlp 
 import nafnet
 import constants
 from dataset import HierText
@@ -36,7 +36,7 @@ def train(args, dataloader, dataset_type):
         save_image_dir.mkdir(parents=True, exist_ok=True)
         
     device = args["device"]
-    model = unet_with_gmlp.DVQAModel().to(device)
+    model = gmlp.DVQAModel().to(device)
 #     img_channel = 3
 #     width = 32
 
@@ -109,7 +109,7 @@ def train(args, dataloader, dataset_type):
 #                 outputs[outputs>=0.5]=1
 #                 outputs[outputs<0.5]=0
                 
-#                 final_image = torch.cat([binary_image[0], outputs[0]])
+#                 final_image = torch.cat([binary_image[0], outputs.squeeze()[0]])
 #                 grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
 
 #                 torchvision.utils.save_image(grid_image, f"{save_image_dir}/{idx}.jpg")
@@ -151,5 +151,5 @@ if __name__ == "__main__":
 
     args['run_dir'] = out_dir / arg_parser.run_dir
    
-#     train(args, train_dataloader, "train")
+    train(args, train_dataloader, "train")
     train(args, val_dataloader, "val")    

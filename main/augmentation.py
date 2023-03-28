@@ -1,6 +1,16 @@
 import cv2 
+import Augmentor
 import numpy as np 
+import torchvision
 
+def gaussian_distortion():
+    p = Augmentor.Pipeline()
+    
+    p.gaussian_distortion(probability=1.0, grid_width=np.random.randint(1, 8), grid_height=np.random.randint(1, 8), magnitude=np.random.randint(1, 8), corner=np.random.default_rng().choice(['bell', 'ul', 'ur', 'dl', 'dr']), method=np.random.default_rng().choice(['in', 'out']))
+    distort_transform = torchvision.transforms.Compose([p.torch_transform()])
+    
+    return distort_transform
+    
 def scale_mat(height, width, scale_factor):
 
     centerX = (width) / 2
@@ -51,3 +61,17 @@ def elation_mat(height, width, elation_x, elation_y):
     elation_mat[2, 2] = -elation_x*width/2 - elation_y*height/2 + 1
 
     return elation_mat 
+
+def apply_random_drop(img):
+    # pixels with value more than mean
+    gt_threshold = np.asarray(img) <= np.asarray(img).mean()
+    gt_pos = np.where(gt_threshold)
+    drop_prob = round(np.random.uniform(0.01, 0.1), 2)
+    
+    drop_pos_x = np.random.choice(gt_pos[0], int(drop_prob*gt_pos[0].shape[0]), replace=False)
+    drop_pos_y = np.random.choice(gt_pos[1], int(drop_prob*gt_pos[1].shape[0]), replace=False)
+
+    img_data = np.array(img)
+    img_data[drop_pos_x, drop_pos_y] = np.asarray(img).max()
+
+    return img_data

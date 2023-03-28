@@ -13,10 +13,9 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torch.nn import functional as F 
 
-import unet_with_gmlp
-import nafnet
+import gmlp_unet_concat as gmlp 
 import constants
-from losses import DiceLoss, TverskyLoss
+from losses import FocalTverskyLoss, TverskyLoss, FocalBCELoss
 from dataset import HierText
 
 torch.manual_seed(27)
@@ -46,7 +45,7 @@ def train(args):
     train_dataloader = DataLoader(train_dataset, batch_size=constants.BATCH_SIZE, num_workers=constants.NUM_WORKERS, shuffle=True, pin_memory=True)
     val_dataloader = DataLoader(val_dataset, batch_size=constants.BATCH_SIZE, num_workers=constants.NUM_WORKERS, shuffle=False, pin_memory=True)
     
-    model = unet_with_gmlp.DVQAModel().to(device)
+    model = gmlp.DVQAModel().to(device)
 #     img_channel = 3
 #     width = 32
 
@@ -58,7 +57,7 @@ def train(args):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args["learning_rate"])
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args["decayRate"])
-    diceloss_fn = DiceLoss()
+    diceloss_fn = TverskyLoss()
     
     scaler = torch.cuda.amp.GradScaler(enabled=True)
     
@@ -89,7 +88,6 @@ def train(args):
 
                     outputs = model(image)
                     loss = constants.BCE_LOSS_WEIGHT * F.binary_cross_entropy_with_logits(outputs.squeeze(), binary_image.squeeze(), weight=weight_map.squeeze()) + constants.DICE_LOSS_WEIGHT * diceloss_fn(outputs.squeeze(), binary_image.squeeze())
-
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -156,7 +154,7 @@ def train(args):
                             outputs[outputs>=0.5]=1
                             outputs[outputs<0.5]=0
 
-                            final_image = torch.cat([binary_image[0], outputs[0]])
+                            final_image = torch.cat([binary_image[0], outputs.squeeze()[0]])
                             grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
 
                             torchvision.utils.save_image(grid_image, f"{save_train_image_dir}/{idx}.jpg")

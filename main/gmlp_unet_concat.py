@@ -271,14 +271,15 @@ class UNetDecoderBlock(nn.Module):
 
         self.cross_attention = CrossAttention(self.num_channels)
 
-    def forward(self, x, enc):
+    def forward(self, x, enc=None):
         
         x = x.permute(0,2,3,1)  #n,h,w,c
-        enc = enc.permute(0,2,3,1) #n,h,w,c
 
         x = self.SplitHeadMultiAxisGmlpLayer(x)
-        x = self.cross_attention(x, enc)
 
+        if enc != None:
+            enc = enc.permute(0,2,3,1) #n,h,w,c
+            x = torch.cat((x, enc), 3)
         x = x.permute(0,3,1,2)  #n,c,h,w
 
         return x
@@ -302,24 +303,27 @@ class DVQAModel(nn.Module):
         self.enc_conv_4 = nn.Conv2d(4 * self.channels, 8 * self.channels,kernel_size=(3,3),stride=2,padding=1)
         self.enc_block_4 = UNetEncoderBlock(num_channels= 8 * self.channels, block_size=(4, 4), grid_size=(4, 4))
 
-        self.dec_embedding = nn.Parameter(torch.randn(1, 8 * self.channels, 64, 64))
-
         self.dec_block_4 = UNetDecoderBlock(num_channels= 8 * self.channels, block_size=(4, 4), grid_size=(4, 4))
         self.dec_conv_4 = nn.Sequential(nn.Upsample(scale_factor=2, mode='bilinear'),
                                         nn.Conv2d(8 * self.channels, 4 * self.channels, kernel_size=(3,3), bias=self.bias, padding=1, stride=1))
         
         self.dec_block_3 = UNetDecoderBlock(num_channels= 4 * self.channels, block_size=(8, 8), grid_size=(8, 8))
+        self.dec_conv_3_1 = nn.Conv2d(8 * self.channels, 4 * self.channels, kernel_size=(3,3), bias=self.bias, padding=1, stride=1)
         self.dec_conv_3 = nn.Sequential(nn.Upsample(scale_factor=2, mode='bilinear'),
                                         nn.Conv2d(4 * self.channels, 2 * self.channels, kernel_size=(3,3), bias=self.bias, padding=1, stride=1))
         
         self.dec_block_2 = UNetDecoderBlock(num_channels= 2 * self.channels, block_size=(16, 16), grid_size=(16, 16))
+        self.dec_conv_2_1 = nn.Conv2d(4 * self.channels, 2 * self.channels, kernel_size=(3,3), bias=self.bias, padding=1, stride=1)
         self.dec_conv_2 = nn.Sequential(nn.Upsample(scale_factor=2, mode='bilinear'),
                                         nn.Conv2d(2 * self.channels, self.channels, kernel_size=(3,3), bias=self.bias, padding=1, stride=1))
 
         self.dec_block_1 = UNetDecoderBlock(num_channels= self.channels, block_size=(32, 32), grid_size=(32, 32))
+        self.dec_conv_1_1 = nn.Conv2d(2 * self.channels, self.channels, kernel_size=(3,3), bias=self.bias, padding=1, stride=1)
         self.dec_conv_1 = nn.Sequential(nn.Upsample(scale_factor=2, mode='bilinear'),
                                         nn.Conv2d(self.channels, 1, kernel_size=(3,3), bias=self.bias, padding=1, stride=1))
         
+        self.tanh = nn.Hardtanh(0, 255)
+         
     def forward(self, input):
         batch_size = input.shape[0]
 
@@ -335,17 +339,16 @@ class DVQAModel(nn.Module):
         x = self.enc_conv_4(x_enc_block_3)
         x_enc_block_4 = self.enc_block_4(x)
         
-        x_dec = self.dec_embedding.repeat(batch_size, 1, 1, 1)
-        x_dec = self.dec_block_4(x_dec, x_enc_block_4)
+        x_dec = self.dec_block_4(x_enc_block_4, None)
         x_dec = self.dec_conv_4(x_dec)
 
-        x_dec = self.dec_block_3(x_dec, x_enc_block_3)
+        x_dec = self.dec_conv_3_1(self.dec_block_3(x_dec, x_enc_block_3))
         x_dec = self.dec_conv_3(x_dec)
 
-        x_dec = self.dec_block_2(x_dec, x_enc_block_2)
+        x_dec = self.dec_conv_2_1(self.dec_block_2(x_dec, x_enc_block_2))
         x_dec = self.dec_conv_2(x_dec)
 
-        x_dec = self.dec_block_1(x_dec, x_enc_block_1)
+        x_dec = self.dec_conv_1_1(self.dec_block_1(x_dec, x_enc_block_1))
         x_dec = self.dec_conv_1(x_dec)
 
-        return x_dec.squeeze()
+        return self.tanh(x_dec)
