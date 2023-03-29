@@ -188,34 +188,6 @@ class ResidualSplitHeadMultiAxisGmlpLayer(nn.Module):
         x = self.dropout(x)
         x = x + shortcut
         return x
-    
-class CrossAttention(nn.Module):
-    def __init__(self, num_channels, use_bias=True, dropout_rate=0.):
-        super().__init__()
-
-        self.num_channels = num_channels
-        self.use_bias = use_bias
-        self.drop = dropout_rate
-
-        self.LayerNorm_in = Layer_norm_process(self.num_channels)
-        self.in_project = nn.Linear(self.num_channels, self.num_channels, bias=self.use_bias)
-        self.gelu = nn.GELU()
-        self.out_project = nn.Linear(self.num_channels, self.num_channels, bias=self.use_bias)
-        self.dropout = nn.Dropout(self.drop)
-
-    def forward(self, x, enc):
-        shortcut = x
-        x = self.LayerNorm_in(x)
-        x = self.in_project(x)
-        x = self.gelu(x)
-
-        x = x * enc
-        x = self.out_project(x)
-        x = self.dropout(x)
-
-        x = x + shortcut
-        
-        return x
 
 class UNetEncoderBlock(nn.Module):
     def __init__(self, num_channels, block_size, grid_size, lrelu_slope=0.2,block_gmlp_factor=2, grid_gmlp_factor=2,
@@ -269,17 +241,14 @@ class UNetDecoderBlock(nn.Module):
                             grid_size=self.grid_size, num_channels=self.num_channels, input_proj_factor=self.input_proj_factor,
                             block_gmlp_factor=self.block_gmlp_factor, grid_gmlp_factor=self.grid_gmlp_factor, dropout_rate=self.drop, use_bias=self.use_bias)
 
-        self.cross_attention = CrossAttention(self.num_channels)
-
     def forward(self, x, enc=None):
+
+        if enc != None:
+            x = torch.add(x, enc)
         
         x = x.permute(0,2,3,1)  #n,h,w,c
 
         x = self.SplitHeadMultiAxisGmlpLayer(x)
-
-        if enc != None:
-            enc = enc.permute(0,2,3,1) #n,h,w,c
-            x = torch.add(x, enc)
 
         x = x.permute(0,3,1,2)  #n,c,h,w
 
