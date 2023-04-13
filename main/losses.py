@@ -86,7 +86,7 @@ class TverskyLoss(nn.Module):
     def __init__(self):
         super(TverskyLoss, self).__init__()
     
-    def forward(self, preds, target, alpha=0.65, beta = 0.35, epsilon=1e-6):
+    def forward(self, preds, target, alpha=0.7, beta = 0.3, epsilon=1e-6):
         preds = torch.sigmoid(preds) 
 
         #flatten label and preds tensors

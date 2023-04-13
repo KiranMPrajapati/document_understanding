@@ -11,8 +11,10 @@ from pathlib import Path
 from tqdm import tqdm 
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
+from torchmetrics import JaccardIndex
+from torchmetrics.classification import BinaryStatScores
 
-import gmlp_unet_concat as gmlp 
+import gmlp_cross as gmlp 
 import nafnet
 import constants
 from dataset import HierText
@@ -22,21 +24,40 @@ torch.cuda.manual_seed_all(27)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+jaccard = JaccardIndex(task="multiclass", num_classes=2).to(device)
+metric = BinaryStatScores().to(device)
+
+def panoptic_quality(pred, target):
+    iou = jaccard(pred, target)
+    tp, fp, tn, fn, _ = metric(pred, target)
+    
+    pq = iou / (tp + 0.5*fp + 0.5*fn)
+    print(pq)
+    
+    return pq 
+    
+
 def train(args, dataloader, dataset_type):
     model_save_dir = args['run_dir'] / 'checkpoints'
     if not model_save_dir.exists():
         model_save_dir.mkdir(parents=True, exist_ok=True)
     
     if dataset_type == "train":
-        save_image_dir = args['run_dir'] / 'train_images'
+        save_image_dir = args['run_dir'] / 'poly_gt_train_images'
     else:
-        save_image_dir = args['run_dir'] / 'val_images'
+        save_image_dir = args['run_dir'] / 'poly_gt_val_images'
         
     if not save_image_dir.exists():
         save_image_dir.mkdir(parents=True, exist_ok=True)
         
     device = args["device"]
-    model = gmlp.DVQAModel().to(device)
+    
+    if args['pretrained_model_dir']:
+        pretrained_model_dir = args['pretrained_model_dir']
+        model = gmlp.DVQAModel_pretrained(12, pretrained_model_dir).to(device)
+    else:
+        model = gmlp.DVQAModel().to(device)
 #     img_channel = 3
 #     width = 32
 
@@ -52,20 +73,16 @@ def train(args, dataloader, dataset_type):
     model.load_state_dict(checkpoint['model'])
     start_epoch = checkpoint['epoch'] + 1
     
-    f1 = torchmetrics.classification.BinaryF1Score().to(device)
-    precision = torchmetrics.classification.BinaryPrecision().to(device)
-    recall = torchmetrics.classification.BinaryRecall().to(device)
-    accuracy = torchmetrics.classification.BinaryAccuracy().to(device)
+#     f1 = torchmetrics.classification.BinaryF1Score().to(device)
+#     precision = torchmetrics.classification.BinaryPrecision().to(device)
+#     recall = torchmetrics.classification.BinaryRecall().to(device)
+#     accuracy = torchmetrics.classification.BinaryAccuracy().to(device)
         
     m = nn.Sigmoid()
     
     with torch.no_grad():
         model.eval()
-        total_f1_score = 0 
-        total_precision_score = 0
-        total_recall_score = 0
-        total_accuracy_score = 0
-
+        pq = 0 
         with tqdm(dataloader, unit="batch") as tepoch:
             for batch in tepoch:
                 tepoch.set_description(f"{dataset_type} Inference Started")
@@ -76,27 +93,53 @@ def train(args, dataloader, dataset_type):
                 outputs = m(outputs)
                 outputs[outputs>=0.5]=1
                 outputs[outputs<0.5]=0
+                print(torch.unique(binary_image))
+                print(torch.unique(outputs))
                 
-                precision_score = precision(outputs.squeeze(), binary_image.squeeze())
-                recall_score = recall(outputs.squeeze(), binary_image.squeeze())
-                accuracy_score = accuracy(outputs.squeeze(), binary_image.squeeze())
-                f1_score = f1(outputs.squeeze(), binary_image.squeeze())  
-
-                total_f1_score += f1_score 
-                total_precision_score += precision_score
-                total_recall_score += recall_score
-                total_accuracy_score += accuracy_score
-            avg_f1_score = total_f1_score / len(dataloader) 
-            avg_precision_score = total_precision_score / len(dataloader)
-            avg_recall_score = total_recall_score/ len(dataloader)
-            avg_accuracy_score = total_accuracy_score / len(dataloader) 
-            
+                pq += panoptic_quality(outputs.squeeze(), binary_image.squeeze())
+                
+            pq = pq / len(dataloader) 
             print(f"****{dataset_type}******")
-            print(f"Precision: {avg_precision_score}")
-            print(f"Recall: {avg_recall_score}")
-            print(f"Accuracy: {avg_accuracy_score}")
-            print(f"F1 score: {avg_f1_score}")
-            print('\n')
+            print(f"Precision: {pq}")
+    
+#     with torch.no_grad():
+#         model.eval()
+#         total_f1_score = 0 
+#         total_precision_score = 0
+#         total_recall_score = 0
+#         total_accuracy_score = 0
+
+#         with tqdm(dataloader, unit="batch") as tepoch:
+#             for batch in tepoch:
+#                 tepoch.set_description(f"{dataset_type} Inference Started")
+#                 image = batch['image'].to(device)
+#                 binary_image = batch['binary_image'].to(device)
+
+#                 outputs = model(image)
+#                 outputs = m(outputs)
+#                 outputs[outputs>=0.5]=1
+#                 outputs[outputs<0.5]=0
+                
+#                 precision_score = precision(outputs.squeeze(), binary_image.squeeze())
+#                 recall_score = recall(outputs.squeeze(), binary_image.squeeze())
+#                 accuracy_score = accuracy(outputs.squeeze(), binary_image.squeeze())
+#                 f1_score = f1(outputs.squeeze(), binary_image.squeeze())  
+
+#                 total_f1_score += f1_score 
+#                 total_precision_score += precision_score
+#                 total_recall_score += recall_score
+#                 total_accuracy_score += accuracy_score
+#             avg_f1_score = total_f1_score / len(dataloader) 
+#             avg_precision_score = total_precision_score / len(dataloader)
+#             avg_recall_score = total_recall_score/ len(dataloader)
+#             avg_accuracy_score = total_accuracy_score / len(dataloader) 
+            
+#             print(f"****{dataset_type}******")
+#             print(f"Precision: {avg_precision_score}")
+#             print(f"Recall: {avg_recall_score}")
+#             print(f"Accuracy: {avg_accuracy_score}")
+#             print(f"F1 score: {avg_f1_score}")
+#             print('\n')
             
 #         with tqdm(dataloader, unit="batch") as tepoch:
 #             for idx, batch in enumerate(tepoch):
@@ -126,8 +169,8 @@ if __name__ == "__main__":
     args = {}
     args['train_data_dir'] = 'data/train'
     args['val_data_dir'] = 'data/validation'
-    args['binary_data_dir'] = 'data/edge_detected_1dilated_train'
-    args['val_binary_data_dir'] = 'data/edge_detected_1dilated_val'
+    args['binary_data_dir'] = 'data/binary_train'
+    args['val_binary_data_dir'] = 'data/binary_val'
     args['csv_file'] = 'data/gt/hiertext.csv'
     args['val_csv_file'] = 'data/gt/val_hiertext.csv'
     
@@ -146,8 +189,15 @@ if __name__ == "__main__":
     args['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_dir", type=str, required=False, default='')
+    parser.add_argument("--pretrained_model_dir", type=str, required=False, default=None)
+
 
     arg_parser = parser.parse_args()
+    
+    if arg_parser.pretrained_model_dir:
+        args['pretrained_model_dir'] = out_dir / arg_parser.pretrained_model_dir
+    else:
+        args['pretrained_model_dir'] = None
 
     args['run_dir'] = out_dir / arg_parser.run_dir
    

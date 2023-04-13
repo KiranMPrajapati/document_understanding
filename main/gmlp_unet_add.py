@@ -236,17 +236,21 @@ class UNetDecoderBlock(nn.Module):
         self.reduction = channels_reduction
         self.drop = dropout_rate
         self.use_bias = use_bias
+#         self.intermediate_layernorm = Layer_norm_process(self.num_channels)
         
         self.SplitHeadMultiAxisGmlpLayer = ResidualSplitHeadMultiAxisGmlpLayer(block_size=self.block_size, 
                             grid_size=self.grid_size, num_channels=self.num_channels, input_proj_factor=self.input_proj_factor,
                             block_gmlp_factor=self.block_gmlp_factor, grid_gmlp_factor=self.grid_gmlp_factor, dropout_rate=self.drop, use_bias=self.use_bias)
 
     def forward(self, x, enc=None):
+        x = x.permute(0,2,3,1)  #n,h,w,c
+
+#         x = self.intermediate_layernorm(x)
 
         if enc != None:
+            enc = enc.permute(0,2,3,1)
+#             enc = self.intermediate_layernorm(enc)
             x = torch.add(x, enc)
-        
-        x = x.permute(0,2,3,1)  #n,h,w,c
 
         x = self.SplitHeadMultiAxisGmlpLayer(x)
 
@@ -288,9 +292,7 @@ class DVQAModel(nn.Module):
         self.dec_block_1 = UNetDecoderBlock(num_channels= self.channels, block_size=(32, 32), grid_size=(32, 32))
         self.dec_conv_1 = nn.Sequential(nn.Upsample(scale_factor=2, mode='bilinear'),
                                         nn.Conv2d(self.channels, 1, kernel_size=(3,3), bias=self.bias, padding=1, stride=1))
-        
-        self.tanh = nn.Hardtanh(0, 255)
-        
+                
     def forward(self, input):
         batch_size = input.shape[0]
 
@@ -318,4 +320,4 @@ class DVQAModel(nn.Module):
         x_dec = self.dec_block_1(x_dec, x_enc_block_1)
         x_dec = self.dec_conv_1(x_dec)
 
-        return self.tanh(x_dec)
+        return x_dec.squeeze()

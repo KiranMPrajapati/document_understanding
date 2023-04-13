@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torch.nn import functional as F 
 
-import gmlp_cross as gmlp 
+import test as gmlp 
 import constants
 from losses import FocalTverskyLoss, TverskyLoss, FocalBCELoss
 from dataset import HierText
@@ -25,6 +25,10 @@ torch.backends.cudnn.benchmark = False
 
 def train(args):
     model_save_dir = args['run_dir'] / 'checkpoints'
+    
+    if args['pretrained_model_dir']:
+        pretrained_model_dir = args['pretrained_model_dir']
+    
     if not model_save_dir.exists():
         model_save_dir.mkdir(parents=True, exist_ok=True)
         
@@ -45,7 +49,7 @@ def train(args):
     train_dataloader = DataLoader(train_dataset, batch_size=constants.BATCH_SIZE, num_workers=constants.NUM_WORKERS, shuffle=True, pin_memory=True)
     val_dataloader = DataLoader(val_dataset, batch_size=constants.BATCH_SIZE, num_workers=constants.NUM_WORKERS, shuffle=False, pin_memory=True)
     
-    model = gmlp.DVQAModel().to(device)
+    model = gmlp.DVQAModel_pretrained(12, pretrained_model_dir).to(device)
 #     img_channel = 3
 #     width = 32
 
@@ -140,47 +144,47 @@ def train(args):
                 "val_loss": val_loss}, epoch)
 
             
-        if (epoch+1) % 50 == 0:
-            with torch.no_grad():
-                model.eval()
-                with tqdm(train_dataloader, unit="batch") as tepoch:
-                        for idx, batch in enumerate(tepoch):
-                            tepoch.set_description(f"Started Saving train Image")
-                            image = batch['image'].to(device)
-                            binary_image = batch['binary_image'].to(device)
+#         if (epoch+1) % 50 == 0:
+#             with torch.no_grad():
+#                 model.eval()
+#                 with tqdm(train_dataloader, unit="batch") as tepoch:
+#                         for idx, batch in enumerate(tepoch):
+#                             tepoch.set_description(f"Started Saving train Image")
+#                             image = batch['image'].to(device)
+#                             binary_image = batch['binary_image'].to(device)
 
-                            outputs = model(image)
-                            outputs = torch.sigmoid(outputs)
-                            outputs[outputs>=0.5]=1
-                            outputs[outputs<0.5]=0
+#                             outputs = model(image)
+#                             outputs = torch.sigmoid(outputs)
+#                             outputs[outputs>=0.5]=1
+#                             outputs[outputs<0.5]=0
 
-                            final_image = torch.cat([binary_image[0], outputs.squeeze()[0]])
-                            grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
+#                             final_image = torch.cat([binary_image[0], outputs.squeeze()[0]])
+#                             grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
 
-                            torchvision.utils.save_image(grid_image, f"{save_train_image_dir}/{idx}.jpg")
-                            plt.imsave(f"{save_train_image_dir}/real{idx}.jpg", image.to('cpu')[0].detach().permute(1,2,0).numpy())
-                            if idx == 100:
-                                break
+#                             torchvision.utils.save_image(grid_image, f"{save_train_image_dir}/{idx}.jpg")
+#                             plt.imsave(f"{save_train_image_dir}/real{idx}.jpg", image.to('cpu')[0].detach().permute(1,2,0).numpy())
+#                             if idx == 100:
+#                                 break
 
 
-                with tqdm(val_dataloader, unit="batch") as tepoch:
-                    for idx, batch in enumerate(tepoch):
-                        tepoch.set_description(f"Started Saving val Image")
-                        image = batch['image'].to(device)
-                        binary_image = batch['binary_image'].to(device)
+#                 with tqdm(val_dataloader, unit="batch") as tepoch:
+#                     for idx, batch in enumerate(tepoch):
+#                         tepoch.set_description(f"Started Saving val Image")
+#                         image = batch['image'].to(device)
+#                         binary_image = batch['binary_image'].to(device)
 
-                        outputs = model(image)
-                        outputs = torch.sigmoid(outputs)
-                        outputs[outputs>=0.5]=1
-                        outputs[outputs<0.5]=0
+#                         outputs = model(image)
+#                         outputs = torch.sigmoid(outputs)
+#                         outputs[outputs>=0.5]=1
+#                         outputs[outputs<0.5]=0
 
-                        final_image = torch.cat([binary_image[0], outputs[0]])
-                        grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
+#                         final_image = torch.cat([binary_image[0], outputs[0]])
+#                         grid_image = torchvision.utils.make_grid(final_image, nrow=2) 
 
-                        torchvision.utils.save_image(grid_image, f"{save_val_image_dir}/{idx}.jpg")
-                        plt.imsave(f"{save_val_image_dir}/real{idx}.jpg", image.to('cpu')[0].detach().permute(1,2,0).numpy())
-                        if idx == 100:
-                            break
+#                         torchvision.utils.save_image(grid_image, f"{save_val_image_dir}/{idx}.jpg")
+#                         plt.imsave(f"{save_val_image_dir}/real{idx}.jpg", image.to('cpu')[0].detach().permute(1,2,0).numpy())
+#                         if idx == 100:
+#                             break
             
         
         print('***********************')
@@ -191,12 +195,12 @@ if __name__ == "__main__":
         out_dir.mkdir(parents=True, exist_ok=True)
         
     args = {}
-    args['train_data_dir'] = 'data/mixed_data/train/images'
-    args['val_data_dir'] = 'data/TotalText/totaltext/Images/Test'
-    args['binary_data_dir'] = 'data/mixed_data/train/groundtruth_textregion'
-    args['val_binary_data_dir'] = 'data/TotalText/totaltext/groundtruth_textregion/Text_Region_Mask/Test'
-    args['csv_file'] = 'data/mixed_data/train/groundtruth_textregion/mixed_data_train.csv'
-    args['val_csv_file'] = 'data/TotalText/totaltext/groundtruth_textregion/Text_Region_Mask/Test/total_text_test.csv'
+    args['train_data_dir'] = 'data/train'
+    args['val_data_dir'] = 'data/validation'
+    args['binary_data_dir'] = 'data/binary_train'
+    args['val_binary_data_dir'] = 'data/binary_val'
+    args['csv_file'] = 'data/gt/hiertext.csv'
+    args['val_csv_file'] = 'data/gt/val_hiertext.csv'
     
     args['transform'] = transforms.Compose([
             transforms.ToPILImage(),
@@ -211,9 +215,13 @@ if __name__ == "__main__":
     args['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_dir", type=str, required=False, default='')
+    parser.add_argument("--pretrained_model_dir", type=str, required=False, default='')
 
     arg_parser = parser.parse_args()
-
+    
+    if arg_parser.pretrained_model_dir:
+        args['pretrained_model_dir'] = out_dir / arg_parser.pretrained_model_dir
+        
     if arg_parser.run_dir:
         run_dir = out_dir / arg_parser.run_dir
         resume = True

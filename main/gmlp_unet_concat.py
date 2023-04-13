@@ -281,6 +281,8 @@ class UNetDecoderBlock(nn.Module):
             enc = enc.permute(0,2,3,1) #n,h,w,c
             x = torch.cat((x, enc), 3)
         x = x.permute(0,3,1,2)  #n,c,h,w
+#         print(torch.unique(x))
+#         print('*******')
 
         return x
     
@@ -322,7 +324,7 @@ class DVQAModel(nn.Module):
         self.dec_conv_1 = nn.Sequential(nn.Upsample(scale_factor=2, mode='bilinear'),
                                         nn.Conv2d(self.channels, 1, kernel_size=(3,3), bias=self.bias, padding=1, stride=1))
         
-        self.tanh = nn.Hardtanh(0, 255)
+#         self.tanh = nn.Hardtanh(0, 255)
          
     def forward(self, input):
         batch_size = input.shape[0]
@@ -341,14 +343,20 @@ class DVQAModel(nn.Module):
         
         x_dec = self.dec_block_4(x_enc_block_4, None)
         x_dec = self.dec_conv_4(x_dec)
-
-        x_dec = self.dec_conv_3_1(self.dec_block_3(x_dec, x_enc_block_3))
+        
+        y=self.dec_block_3(x_dec, x_enc_block_3)
+        x_dec = self.dec_conv_3_1(y)
+        
         x_dec = self.dec_conv_3(x_dec)
 
-        x_dec = self.dec_conv_2_1(self.dec_block_2(x_dec, x_enc_block_2))
+        y = self.dec_block_2(x_dec, x_enc_block_2)
+        x_dec = self.dec_conv_2_1(y)
+        
         x_dec = self.dec_conv_2(x_dec)
 
-        x_dec = self.dec_conv_1_1(self.dec_block_1(x_dec, x_enc_block_1))
+        y = self.dec_block_1(x_dec, x_enc_block_1)
+        x_dec = self.dec_conv_1_1(y)
+        
         x_dec = self.dec_conv_1(x_dec)
 
-        return self.tanh(x_dec)
+        return x_dec.squeeze()

@@ -166,9 +166,8 @@ class HierText(Dataset):
         binary_img_dir = os.path.join(self.binary_data_dir, image_name)
 
         image = cv2.imread(img_dir)
-        if image.all() == None:
-            print(img_dir)
         binary_image = cv2.imread(binary_img_dir, cv2.IMREAD_GRAYSCALE)
+        
         h, w = image.shape[:2]
         
         homography, _ = self.perspective_distortion_mat(h, w)
@@ -208,7 +207,7 @@ if __name__ == "__main__":
             transforms.ToTensor()
         ])
     img_path = os.path.abspath(os.path.join("data/train/"))
-    binary_data_dir = os.path.abspath(os.path.join("data/edge_detected_1dilated_train/"))
+    binary_data_dir = os.path.abspath(os.path.join("data/train_data_each_word_map/"))
     csv_file = os.path.abspath(os.path.join("data/gt/hiertext.csv"))
 
     train_dataset = HierText(csv_file=csv_file, data_dir=img_path, binary_data_dir=binary_data_dir, transform=transform)
